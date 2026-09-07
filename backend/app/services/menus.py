@@ -1,0 +1,193 @@
+"""Interactive menu builders (WhatsApp list / reply buttons via WATI).
+
+Hard WhatsApp limits are enforced here so the WATI call never fails on length:
+  reply buttons: max 3, title <= 20 chars
+  list: max 10 rows total, row title <= 24, row description <= 72, section title <= 24,
+        list button text <= 20, header/footer <= 60, body <= 1024
+Row/button titles are what the customer's phone sends back as text, so every title must be
+something the intent parser understands ("SO 45240", "FG-2002", "Yes", "Check another SO", ...).
+"""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Literal
+
+import structlog
+
+log = structlog.get_logger(__name__)
+
+BUTTONS_MAX = 3
+BUTTON_TEXT_MAX = 20
+LIST_ROWS_MAX = 10
+ROW_TITLE_MAX = 24
+ROW_DESC_MAX = 72
+SECTION_TITLE_MAX = 24
+LIST_BUTTON_MAX = 20
+HEADER_MAX = 60
+FOOTER_MAX = 60
+BODY_MAX = 1024
+
+
+@dataclass
+class Option:
+    title: str
+    description: str = ""
+
+
+@dataclass
+class Options:
+    kind: Literal["buttons", "list"]
+    items: list[Option] = field(default_factory=list)
+    button_text: str = "Select"  # list only: the button that opens the list
+    section_title: str = ""  # list only
+    header: str = ""
+    footer: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def titles(self) -> list[str]:
+        return [o.title for o in self.items]
+
+    def as_text(self) -> str:
+        """Plain-text fallback when the interactive send is not possible."""
+        if self.kind == "buttons":
+            return "\n".join(f"• {o.title}" for o in self.items)
+        lines = []
+        for i, o in enumerate(self.items, 1):
+            lines.append(f"{i}. {o.title}" + (f" — {o.description}" if o.description else ""))
+        return "\n".join(lines)
+
+
+def _cut(s: str, n: int) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+
+DEFAULT_LABELS: dict[str, dict[str, str]] = {
+    "yes": {"en": "Yes", "hi": "हाँ", "gu": "હા"},
+    "no": {"en": "No", "hi": "नहीं", "gu": "ના"},
+    "another": {"en": "Check another SO", "hi": "दूसरा SO देखें", "gu": "બીજો SO જુઓ"},
+    "done": {"en": "Done", "hi": "हो गया", "gu": "થઈ ગયું"},
+    "my_orders": {"en": "Show my orders", "hi": "मेरे ऑर्डर दिखाएं", "gu": "મારા ઓર્ડર બતાવો"},
+    "menu": {"en": "Main menu", "hi": "मुख्य मेनू", "gu": "મુખ્ય મેનુ"},
+    "select_so": {"en": "Select SO", "hi": "SO चुनें", "gu": "SO પસંદ કરો"},
+    "select_item": {"en": "Select item", "hi": "आइटम चुनें", "gu": "આઇટમ પસંદ કરો"},
+    "your_orders": {"en": "Your orders", "hi": "आपके ऑर्डर", "gu": "તમારા ઓર્ડર"},
+    "items_of_so": {"en": "Items in SO {so}", "hi": "SO {so} के आइटम", "gu": "SO {so} ના આઇટમ"},
+    "n_items": {"en": "{n} items", "hi": "{n} आइटम", "gu": "{n} આઇટમ"},
+    "one_item": {"en": "1 item", "hi": "1 आइटम", "gu": "1 આઇટમ"},
+    "more_hint": {"en": "Not listed? Type your SO number.", "hi": "सूची में नहीं? अपना SO नंबर लिखें।", "gu": "યાદીમાં નથી? તમારો SO નંબર લખો."},
+    "type_hint": {"en": "Or type the code.", "hi": "या कोड लिखें।", "gu": "અથવા કોડ લખો."},
+}
+
+
+LABELS = DEFAULT_LABELS  # backwards-compatible alias (defaults only)
+
+
+def label(key: str, lang: str, **fmt) -> str:
+    """Label text, honouring admin overrides from the template editor."""
+    from .templates import registry  # lazy: templates imports DEFAULT_LABELS from here
+
+    lang = lang if lang in ("en", "hi", "gu") else "en"
+    try:
+        return registry.label(key, lang).format(**fmt)
+    except (KeyError, IndexError, ValueError):
+        return DEFAULT_LABELS[key][lang].format(**fmt)
+
+
+def custom_buttons(keys: list[str], lang: str) -> Options | None:
+    items = [Option(_cut(label(k, lang), BUTTON_TEXT_MAX)) for k in keys[:BUTTONS_MAX] if k in DEFAULT_LABELS]
+    return Options(kind="buttons", items=items) if items else None
+
+
+# ---------------- builders ----------------
+def _so_sort_key(so: str):
+    return (0, -int(so)) if so.isdigit() else (1, so)
+
+
+def so_list(rows, lang: str) -> Options | None:
+    """One row per distinct SO of this customer. Newest (highest) SO first, max 10."""
+    by_so: dict[str, list] = {}
+    for r in rows:
+        by_so.setdefault(r.so_no, []).append(r)
+    if not by_so:
+        return None
+    sos = sorted(by_so, key=_so_sort_key)
+    dropped = max(0, len(sos) - LIST_ROWS_MAX)
+    if dropped:
+        log.info("so_list_truncated", total=len(sos), shown=LIST_ROWS_MAX)
+    items = []
+    for so in sos[:LIST_ROWS_MAX]:
+        items_in = by_so[so]
+        n = len({r.fg_item_code for r in items_in})
+        po = next((r.po_no for r in items_in if r.po_no), None)
+        desc = label("one_item", lang) if n == 1 else label("n_items", lang, n=n)
+        if po:
+            desc += f" · PO {po}"
+        items.append(Option(title=_cut(f"SO {so}", ROW_TITLE_MAX), description=_cut(desc, ROW_DESC_MAX)))
+    return Options(
+        kind="list",
+        items=items,
+        button_text=_cut(label("select_so", lang), LIST_BUTTON_MAX),
+        section_title=_cut(label("your_orders", lang), SECTION_TITLE_MAX),
+        footer=_cut(label("more_hint", lang), FOOTER_MAX) if dropped else "",
+    )
+
+
+def fg_list(rows, lang: str) -> Options | None:
+    """One row per FG item of one SO. Returns None if more than 10 (caller falls back to text)."""
+    codes: list[str] = []
+    for r in rows:
+        if r.fg_item_code and r.fg_item_code not in codes:
+            codes.append(r.fg_item_code)
+    if not codes or len(codes) > LIST_ROWS_MAX:
+        if codes:
+            log.info("fg_list_too_long_fallback_text", n=len(codes))
+        return None
+    so = rows[0].so_no
+    return Options(
+        kind="list",
+        items=[Option(title=_cut(c, ROW_TITLE_MAX)) for c in codes],
+        button_text=_cut(label("select_item", lang), LIST_BUTTON_MAX),
+        section_title=_cut(label("items_of_so", lang, so=so), SECTION_TITLE_MAX),
+        footer=_cut(label("type_hint", lang), FOOTER_MAX),
+    )
+
+
+def confirm_buttons(lang: str) -> Options:
+    return Options(kind="buttons", items=[Option(_cut(label("yes", lang), BUTTON_TEXT_MAX)), Option(_cut(label("no", lang), BUTTON_TEXT_MAX))])
+
+
+def after_result_buttons(lang: str) -> Options:
+    return Options(kind="buttons", items=[Option(_cut(label("another", lang), BUTTON_TEXT_MAX)), Option(_cut(label("done", lang), BUTTON_TEXT_MAX))])
+
+
+def not_found_buttons(lang: str) -> Options:
+    return Options(kind="buttons", items=[Option(_cut(label("my_orders", lang), BUTTON_TEXT_MAX)), Option(_cut(label("done", lang), BUTTON_TEXT_MAX))])
+
+
+def validate(o: Options) -> list[str]:
+    """Returns a list of limit violations (empty = OK). Used by tests and the WATI client."""
+    problems = []
+    if o.kind == "buttons":
+        if not 1 <= len(o.items) <= BUTTONS_MAX:
+            problems.append(f"buttons count {len(o.items)} not in 1..{BUTTONS_MAX}")
+        problems += [f"button '{i.title}' > {BUTTON_TEXT_MAX}" for i in o.items if len(i.title) > BUTTON_TEXT_MAX]
+    else:
+        if not 1 <= len(o.items) <= LIST_ROWS_MAX:
+            problems.append(f"rows count {len(o.items)} not in 1..{LIST_ROWS_MAX}")
+        problems += [f"row title '{i.title}' > {ROW_TITLE_MAX}" for i in o.items if len(i.title) > ROW_TITLE_MAX]
+        problems += [f"row desc '{i.description}' > {ROW_DESC_MAX}" for i in o.items if len(i.description) > ROW_DESC_MAX]
+        if len(o.button_text) > LIST_BUTTON_MAX or not o.button_text:
+            problems.append("list button text length")
+        if len(o.section_title) > SECTION_TITLE_MAX:
+            problems.append("section title length")
+    if len(o.header) > HEADER_MAX:
+        problems.append("header length")
+    if len(o.footer) > FOOTER_MAX:
+        problems.append("footer length")
+    titles = [i.title for i in o.items]
+    if len(set(titles)) != len(titles):
+        problems.append("duplicate titles")
+    return problems

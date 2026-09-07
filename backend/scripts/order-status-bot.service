@@ -1,0 +1,17 @@
+# Linux alternative (systemd). Copy to /etc/systemd/system/order-status-bot.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now order-status-bot
+[Unit]
+Description=WhatsApp Order Status Bot (WATI -> backend)
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/order-status-bot/backend
+EnvironmentFile=/opt/order-status-bot/backend/.env
+ExecStart=/opt/order-status-bot/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=*
+Restart=always
+RestartSec=3
+User=orderbot
+
+[Install]
+WantedBy=multi-user.target

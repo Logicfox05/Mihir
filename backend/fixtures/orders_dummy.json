@@ -1,0 +1,84 @@
+{
+  "data": [
+    {
+      "SO No": "45231",
+      "PO No": "PO-7781",
+      "FG Item Code": "FG-1001",
+      "Customer Name": "Shree Packaging Pvt Ltd",
+      "Connection Status": "CONN-PLANT-A-OK",
+      "Real Status (PPC)": "In Production"
+    },
+    {
+      "SO No": "45232",
+      "PO No": "PO-7782",
+      "FG Item Code": "FG-1002",
+      "Customer Name": "Shree Packaging Pvt Ltd",
+      "Connection Status": "CONN-PLANT-A-OK",
+      "Real Status (PPC)": "Dispatched"
+    },
+    {
+      "SO No": "45240",
+      "PO No": "PO-8801",
+      "FG Item Code": "FG-2001",
+      "Customer Name": "Mehta Foods",
+      "Connection Status": "CONN-PLANT-B-OK",
+      "Real Status (PPC)": "Ready for Dispatch"
+    },
+    {
+      "SO No": "45240",
+      "PO No": "PO-8801",
+      "FG Item Code": "FG-2002",
+      "Customer Name": "Mehta Foods",
+      "Connection Status": "CONN-PLANT-B-OK",
+      "Real Status (PPC)": "Printing"
+    },
+    {
+      "SO No": "45240",
+      "PO No": "PO-8801",
+      "FG Item Code": "FG-2003",
+      "Customer Name": "Mehta Foods",
+      "Connection Status": "CONN-PLANT-B-DELAY",
+      "Real Status (PPC)": "Awaiting Material"
+    },
+    {
+      "SO No": "45250",
+      "PO No": "PO-9901",
+      "FG Item Code": "FG-3001",
+      "Customer Name": "Gujarat Polymers",
+      "Connection Status": "CONN-PLANT-A-OK",
+      "Real Status (PPC)": "Lamination"
+    },
+    {
+      "SO No": "45250",
+      "PO No": "PO-9901",
+      "FG Item Code": "FG-3002",
+      "Customer Name": "Gujarat Polymers",
+      "Connection Status": "CONN-PLANT-A-OK",
+      "Real Status (PPC)": "Slitting"
+    },
+    {
+      "SO No": "45260",
+      "PO No": "PO-5555",
+      "FG Item Code": "FG-4001",
+      "Customer Name": "Patel Agro Industries ",
+      "Connection Status": "CONN-PLANT-C-OK",
+      "Real Status (PPC)": "Cylinder Making"
+    },
+    {
+      "SO No": "45270",
+      "PO No": "PO-6666",
+      "FG Item Code": "FG-5001",
+      "Customer Name": "SUNRISE PHARMA",
+      "Connection Status": "CONN-PLANT-C-OK",
+      "Real Status (PPC)": "Quality Check"
+    },
+    {
+      "SO No": "45280",
+      "PO No": "PO-7777",
+      "FG Item Code": "FG-6001",
+      "Customer Name": "Royal Textiles",
+      "Connection Status": "CONN-PLANT-B-OK",
+      "Real Status (PPC)": "Delivered"
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+"""Template editor: validation, overrides applied live, custom keyword replies, API."""
+import uuid
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete
+
+from app.db import session_scope
+from app.main import app
+from app.models import Template, TemplateHistory
+from app.services import menus, replies, templates as T
+from app.services.processor import process_payload
+
+H = {"X-Admin-Key": "test-admin"}
+
+
+@pytest.fixture
+async def clean_templates():
+    async with session_scope() as db:
+        await db.execute(delete(Template))
+        await db.execute(delete(TemplateHistory))
+    await T.load_from_db()
+    yield
+    async with session_scope() as db:
+        await db.execute(delete(Template))
+        await db.execute(delete(TemplateHistory))
+    await T.load_from_db()
+
+
+async def _send(phone, text):
+    async with session_scope() as db:
+        return await process_payload(db, {"id": f"t-{uuid.uuid4().hex}", "waId": phone, "type": "text", "text": text})
+
+
+# ---------------- validation ----------------
+def test_validate_template_rules():
+    assert T.validate_template("result", "en", "Status for SO {so_no}: {real_status}") == []
+    assert any("missing required" in e for e in T.validate_template("result", "en", "Status: done"))
+    assert any("unknown placeholder" in e for e in T.validate_template("welcome", "en", "Hi {name}"))
+    assert any("unbalanced" in e for e in T.validate_template("welcome", "en", "Hi {support"))
+    assert any("empty" in e for e in T.validate_template("welcome", "hi", "   "))
+    assert any("too long" in e for e in T.validate_template("welcome", "en", "x" * 1025))
+    assert T.validate_template("nope", "en", "x") == ["unknown template 'nope'"]
+
+
+def test_validate_label_rules():
+    assert T.validate_label("yes", "en", "Yes, correct") == []
+    assert T.validate_label("yes", "en", "Confirm") == []  # any text works: the parser learns the label
+    assert any("already means" in e for e in T.validate_label("done", "en", "yes"))  # conflicts with confirm_yes
+    assert any("same text" in e for e in T.validate_label("done", "en", "No"))  # same as the No button
+    assert any("look like" in e for e in T.validate_label("another", "en", "SO 45231"))
+    assert any("too long" in e for e in T.validate_label("another", "en", "Check another sales order now"))
+    assert any("missing placeholder" in e for e in T.validate_label("items_of_so", "en", "Items"))
+    assert any("too long" in e for e in T.validate_label("items_of_so", "en", "All the items inside SO {so}"))  # > 24 after render
+    assert T.validate_label("done", "hi", "हो गया") == []
+
+
+def test_validate_custom_rules():
+    ok = T.CustomReply(key="office-hours", title="Office hours", triggers=["timing", "समय"], texts={"en": "9-6", "hi": "", "gu": ""})
+    assert T.validate_custom(ok) == []
+    bad = T.CustomReply(key="result", title="", triggers=[], texts={"en": "", "hi": "", "gu": ""}, buttons=["x", "done", "menu", "another"])
+    errs = T.validate_custom(bad)
+    assert any("clashes" in e for e in errs) and any("title" in e for e in errs) and any("trigger" in e for e in errs)
+    assert any("unknown button" in e for e in errs) and any("at most 3" in e for e in errs) and any("at least one language" in e for e in errs)
+
+
+# ---------------- overrides applied live ----------------
+@pytest.mark.asyncio
+async def test_template_override_changes_customer_reply(clean_templates):
+    assert await T.save_text("template", "result", "en", "Status of SO {so_no}{item} is: {real_status}. Thanks!") == []
+    r = await _send("919167861236", "45231")
+    assert r.reply_text.startswith("Status of SO 45231 is: In Production. Thanks!")
+    # history recorded, reset restores default
+    h = await T.history("template", "result")
+    assert h and h[0]["action"] == "save" and h[0]["text"] is None
+    await T.reset_key("template", "result")
+    r = await _send("919167861236", "45231")
+    assert r.reply_text.startswith("Real Status for SO 45231: In Production")
+
+
+@pytest.mark.asyncio
+async def test_saving_default_text_drops_override(clean_templates):
+    default = replies.DEFAULTS["welcome"]["en"]
+    await T.save_text("template", "welcome", "en", "Custom hello")
+    assert T.registry.is_overridden("template", "welcome", "en")
+    await T.save_text("template", "welcome", "en", default)
+    assert not T.registry.is_overridden("template", "welcome", "en")
+
+
+@pytest.mark.asyncio
+async def test_label_override_changes_buttons_and_still_parses(clean_templates):
+    assert await T.save_text("label", "another", "en", "Another order") == []
+    assert await T.save_text("label", "select_so", "en", "Pick order") == []
+    assert menus.label("select_so", "en") == "Pick order"
+    r = await _send("919167861236", "45231")
+    titles = [i["title"] for i in r.options["items"]]
+    assert titles == ["Another order", "Done"]
+    r = await _send("919167861236", "Another order")  # tapped (edited) label must still re-open the menu
+    assert r.outcome == "welcome" and r.options["button_text"] == "Pick order"
+    r = await _send("919167861236", "another order!")  # typed, different case/punctuation
+    assert r.outcome == "welcome"
+    assert await T.save_text("label", "done", "gu", "પૂર્ણ") == []
+    r = await _send("919167861236", "પૂર્ણ")
+    assert r.outcome == "bye"
+
+
+@pytest.mark.asyncio
+async def test_custom_reply_flow(clean_templates):
+    c = T.CustomReply(key="office-hours", title="Office hours", triggers=["timing", "office hours", "समय"], texts={"en": "We are open Mon-Sat 9-6. Call {support}.", "hi": "हम सोम-शनि 9-6 खुले हैं।", "gu": ""}, buttons=["my_orders", "done"])
+    assert await T.save_custom(c) == []
+    r = await _send("919167861236", "What is your timing?")
+    assert r.outcome == "custom" and "open Mon-Sat" in r.reply_text and "support@test" in r.reply_text
+    assert [i["title"] for i in r.options["items"]] == ["Show my orders", "Done"]
+    r = await _send("919167861236", "समय")
+    assert "सोम-शनि" in r.reply_text
+    # Gujarati text empty -> falls back to English
+    r = await _send("919167861236", "ઓફિસ office hours")
+    assert "open Mon-Sat" in r.reply_text
+    # codes always win over custom triggers; session untouched by custom replies
+    r = await _send("919167861236", "45231 timing")
+    assert r.outcome == "status_delivered"
+    # unverified numbers never get custom replies
+    r = await _send("910000000000", "timing")
+    assert r.outcome == "verify_failed"
+    # disable -> normal flow again
+    c.enabled = False
+    await T.save_custom(c)
+    r = await _send("919167861236", "timing")
+    assert r.outcome != "custom"
+    assert await T.delete_custom("office-hours") is True
+    assert "office-hours" not in T.registry.custom
+
+
+@pytest.mark.asyncio
+async def test_short_trigger_matches_only_whole_message(clean_templates):
+    await T.save_custom(T.CustomReply(key="hi-test", title="x", triggers=["ok"], texts={"en": "OK reply", "hi": "", "gu": ""}))
+    assert T.registry.match_custom("ok") is not None
+    assert T.registry.match_custom("OK!") is not None
+    assert T.registry.match_custom("book my order") is None  # 'ok' inside a word must not match
+
+
+# ---------------- API ----------------
+@pytest.mark.asyncio
+async def test_templates_api_roundtrip(clean_templates):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        assert (await c.get("/admin/api/templates")).status_code == 401
+        cat = (await c.get("/admin/api/templates", headers=H)).json()
+        assert {t["key"] for t in cat["templates"]} == set(T.TEMPLATE_SPECS) and {l["key"] for l in cat["labels"]} == set(T.LABEL_SPECS)
+        assert set(cat["templates"][0]["langs"]) == {"en", "hi", "gu"}
+        r = await c.post("/admin/api/templates/preview", headers=H, json={"kind": "template", "key": "result", "lang": "en", "text": "SO {so_no}: {real_status}"})
+        assert r.json() == {"errors": [], "rendered": "SO 45240: In Production"}
+        r = await c.put("/admin/api/templates/template/result", headers=H, json={"texts": {"en": "no placeholders", "hi": "SO {so_no}: {real_status}"}})
+        body = r.json()
+        assert body["ok"] is False and "en" in body["errors"] and "hi" not in body["errors"]
+        assert not T.registry.is_overridden("template", "result", "hi")  # nothing saved when any language fails
+        r = await c.put("/admin/api/templates/template/result", headers=H, json={"texts": {"hi": "SO {so_no}: {real_status}"}})
+        assert r.json()["ok"] is True and T.registry.is_overridden("template", "result", "hi")
+        hist = (await c.get("/admin/api/templates/template/result/history", headers=H)).json()
+        assert hist and hist[0]["lang"] == "hi"
+        assert (await c.delete("/admin/api/templates/template/result", headers=H)).json()["ok"] is True
+        assert not T.registry.is_overridden("template", "result", "hi")
+        r = await c.post("/admin/api/templates/custom", headers=H, json={"key": "help", "title": "Help", "triggers": ["help"], "texts": {"en": "Help text"}, "buttons": ["done"]})
+        assert r.json()["ok"] is True
+        r = await c.post("/admin/api/templates/custom/test", headers=H, json={"text": "HELP!"})
+        assert r.json()["match"]["key"] == "help"
+        assert (await c.delete("/admin/api/templates/custom/help", headers=H)).json()["ok"] is True
+        assert (await c.delete("/admin/api/templates/custom/help", headers=H)).status_code == 404
+        assert (await c.put("/admin/api/templates/template/nope", headers=H, json={"texts": {"en": "x"}})).status_code == 404

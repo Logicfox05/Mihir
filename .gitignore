@@ -1,0 +1,11 @@
+backend/.venv/
+backend/.env
+backend/*.db
+backend/*.db-*
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/backups/
+dashboard/node_modules/
+dashboard/dist/
+*.log

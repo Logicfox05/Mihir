@@ -1,0 +1,317 @@
+"""Admin API (X-Admin-Key). Consumed by the dashboard; spec paths kept as aliases."""
+from __future__ import annotations
+
+import hmac
+import json
+import uuid
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from pydantic import BaseModel
+from sqlalchemy import desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..config import get_settings
+from ..db import get_db
+from ..jobs import customer_sync, order_refresh, queue_worker, scheduler, session_cleanup
+from ..models import Customer, InboundQueue, MessageLog, NameMismatchLog, OrderCache, Session, SyncRun, utcnow
+from ..services import alerts
+from ..services.state_machine import reset
+from ..services.wati import wati
+from .health import status_payload
+from .webhook import enqueue
+
+router = APIRouter()
+
+
+async def require_admin(x_admin_key: str | None = Header(default=None)):
+    s = get_settings()
+    if not x_admin_key or not hmac.compare_digest(x_admin_key, s.admin_key):
+        raise HTTPException(status_code=401, detail="missing or invalid X-Admin-Key")
+
+
+api = APIRouter(prefix="/admin/api", dependencies=[Depends(require_admin)])
+legacy = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
+
+
+def _dt(v):
+    return v.isoformat() if v else None
+
+
+def _session_dict(s: Session) -> dict:
+    return {
+        "phone": s.phone_e164, "step": s.step, "so_no": s.so_no, "po_no": s.po_no, "fg_code": s.fg_code,
+        "pending_value": s.pending_value, "pending_kind": s.pending_kind, "attempts": s.attempts,
+        "language": s.language, "updated_at": _dt(s.updated_at),
+    }
+
+
+def _msg_dict(m: MessageLog) -> dict:
+    return {
+        "id": m.id, "wati_msg_id": m.wati_msg_id, "phone": m.phone_e164, "direction": m.direction, "type": m.msg_type,
+        "text": m.text, "transcript": m.transcript, "outcome": m.outcome, "step_after": m.step_after, "created_at": _dt(m.created_at),
+        "options": json.loads(m.options) if m.options else None,
+    }
+
+
+def _run_dict(r: SyncRun) -> dict:
+    return {
+        "id": r.id, "kind": r.kind, "source": r.source, "started_at": _dt(r.started_at), "finished_at": _dt(r.finished_at), "ok": r.ok,
+        "total_rows": r.total_rows, "accepted": r.accepted, "rejected": r.rejected,
+        "rejected_rows": json.loads(r.rejected_rows) if r.rejected_rows else [],
+        "raw_headers": json.loads(r.raw_headers) if r.raw_headers else [],
+        "warnings": json.loads(r.warnings) if r.warnings else [], "error": r.error,
+    }
+
+
+# ---------------- overview ----------------
+@api.get("/overview")
+async def overview(db: AsyncSession = Depends(get_db)):
+    s = get_settings()
+    health = await status_payload()
+    since = utcnow() - timedelta(days=14)
+    customers = await db.scalar(select(func.count(Customer.phone_e164)))
+    orders = await db.scalar(select(func.count(OrderCache.id)))
+    distinct_so = await db.scalar(select(func.count(func.distinct(OrderCache.so_no))))
+    active_cut = utcnow() - timedelta(minutes=s.session_timeout_min)
+    active_sessions = await db.scalar(select(func.count(Session.phone_e164)).where(Session.updated_at >= active_cut, Session.step != "START"))
+    mismatches = await db.scalar(select(func.count(NameMismatchLog.id)))
+    queued = await db.scalar(select(func.count(InboundQueue.id)).where(InboundQueue.status.in_(["queued", "processing"])))
+    failed_q = await db.scalar(select(func.count(InboundQueue.id)).where(InboundQueue.status == "failed"))
+
+    day = func.date(MessageLog.created_at)
+    rows = (await db.execute(select(day, MessageLog.direction, func.count(MessageLog.id)).where(MessageLog.created_at >= since).group_by(day, MessageLog.direction).order_by(day))).all()
+    per_day: dict[str, dict] = {}
+    for d, direction, n in rows:
+        key = str(d)
+        per_day.setdefault(key, {"date": key, "in": 0, "out": 0})[direction] = n
+    outcomes = (await db.execute(select(MessageLog.outcome, func.count(MessageLog.id)).where(MessageLog.created_at >= since, MessageLog.direction == "out", MessageLog.outcome.is_not(None)).group_by(MessageLog.outcome))).all()
+    last_runs = {}
+    for kind in ("customers", "orders"):
+        r = (await db.execute(select(SyncRun).where(SyncRun.kind == kind).order_by(desc(SyncRun.id)).limit(1))).scalar_one_or_none()
+        last_runs[kind] = _run_dict(r) if r else None
+    return {
+        "health": health,
+        "counts": {"customers": customers or 0, "orders": orders or 0, "distinct_so": distinct_so or 0, "active_sessions": active_sessions or 0,
+                   "mismatches": mismatches or 0, "queued": queued or 0, "failed_queue": failed_q or 0},
+        "messages_per_day": list(per_day.values()),
+        "outcomes": [{"outcome": o, "count": n} for o, n in outcomes],
+        "last_runs": last_runs,
+        "jobs": scheduler.jobs_info(),
+        "alerts": list(alerts.recent)[-20:],
+        "config": {"mode": s.app_mode, "wati_mocked": s.wati_mocked, "orders_source": s.orders_source, "orders_format": s.orders_format,
+                   "order_refresh_minutes": s.order_refresh_minutes, "customer_sync_cron": s.customer_sync_cron, "session_timeout_min": s.session_timeout_min,
+                   "openai": bool(s.openai_api_key), "groq": bool(s.groq_api_key), "dropbox": s.dropbox_configured, "support_contact": s.support_contact},
+    }
+
+
+# ---------------- sessions ----------------
+@api.get("/sessions")
+async def list_sessions(db: AsyncSession = Depends(get_db), limit: int = 200):
+    rows = (await db.execute(select(Session).order_by(desc(Session.updated_at)).limit(limit))).scalars().all()
+    names = {c.phone_e164: c.customer_name for c in (await db.execute(select(Customer))).scalars()}
+    return [{**_session_dict(r), "customer_name": names.get(r.phone_e164)} for r in rows]
+
+
+@api.get("/sessions/{phone}")
+async def session_detail(phone: str, db: AsyncSession = Depends(get_db)):
+    s = await db.get(Session, phone)
+    c = await db.get(Customer, phone)
+    msgs = (await db.execute(select(MessageLog).where(MessageLog.phone_e164 == phone).order_by(desc(MessageLog.id)).limit(30))).scalars().all()
+    return {"session": _session_dict(s) if s else None, "customer": {"name": c.customer_name, "code": c.customer_code} if c else None,
+            "messages": [_msg_dict(m) for m in reversed(msgs)]}
+
+
+@api.post("/sessions/{phone}/reset")
+async def reset_session(phone: str, db: AsyncSession = Depends(get_db)):
+    s = await db.get(Session, phone)
+    if s:
+        reset(s)
+    return {"ok": True}
+
+
+# ---------------- messages ----------------
+@api.get("/messages")
+async def list_messages(db: AsyncSession = Depends(get_db), phone: str | None = None, q: str | None = None, direction: str | None = None,
+                        outcome: str | None = None, page: int = 1, page_size: int = Query(default=50, le=500)):
+    stmt = select(MessageLog)
+    cnt = select(func.count(MessageLog.id))
+    conds = []
+    if phone:
+        conds.append(MessageLog.phone_e164.like(f"%{phone}%"))
+    if q:
+        conds.append((MessageLog.text.like(f"%{q}%")) | (MessageLog.transcript.like(f"%{q}%")))
+    if direction in ("in", "out"):
+        conds.append(MessageLog.direction == direction)
+    if outcome:
+        conds.append(MessageLog.outcome == outcome)
+    for c in conds:
+        stmt = stmt.where(c)
+        cnt = cnt.where(c)
+    total = await db.scalar(cnt)
+    rows = (await db.execute(stmt.order_by(desc(MessageLog.id)).offset((page - 1) * page_size).limit(page_size))).scalars().all()
+    return {"total": total or 0, "page": page, "page_size": page_size, "items": [_msg_dict(m) for m in rows]}
+
+
+# ---------------- mismatches ----------------
+@api.get("/mismatches")
+async def list_mismatches(db: AsyncSession = Depends(get_db), limit: int = 500):
+    rows = (await db.execute(select(NameMismatchLog).order_by(desc(NameMismatchLog.id)).limit(limit))).scalars().all()
+    return [{"id": r.id, "phone": r.phone_e164, "excel_name": r.excel_name, "api_name": r.api_name, "so_no": r.so_no, "created_at": _dt(r.created_at)} for r in rows]
+
+
+# ---------------- imports / jobs ----------------
+@api.get("/imports")
+async def list_imports(db: AsyncSession = Depends(get_db), kind: str | None = None, limit: int = 50):
+    stmt = select(SyncRun).order_by(desc(SyncRun.id)).limit(limit)
+    if kind:
+        stmt = stmt.where(SyncRun.kind == kind)
+    return [_run_dict(r) for r in (await db.execute(stmt)).scalars().all()]
+
+
+@api.post("/import-customers")
+async def import_customers(file: UploadFile | None = File(default=None)):
+    body = await file.read() if file else None
+    r = await customer_sync.run(body, source_desc=f"upload {file.filename}" if file else None)
+    return _run_dict(r)
+
+
+@api.post("/refresh-orders")
+async def refresh_orders():
+    return _run_dict(await order_refresh.run())
+
+
+@api.post("/test-fetch")
+async def test_fetch():
+    return (await order_refresh.test_fetch()).to_dict()
+
+
+@api.get("/orders-source")
+async def orders_source_info():
+    s = get_settings()
+    return {
+        "source": s.orders_source, "format": s.orders_format, "file_path": str(s.resolve_path(s.orders_file_path)) if s.orders_source == "file" else None,
+        "api_url": s.orders_api_url, "api_method": s.orders_api_method, "api_key_in": s.orders_api_key_in, "api_key_name": s.orders_api_key_name,
+        "api_key_set": bool(s.orders_api_key), "sql_url_set": bool(s.orders_sql_url), "column_map": s.orders_column_map,
+        "last_preview": order_refresh.last_preview.to_dict() if order_refresh.last_preview else None,
+    }
+
+
+@api.post("/cleanup-sessions")
+async def cleanup_sessions():
+    return {"reset": await session_cleanup.run()}
+
+
+@api.get("/queue")
+async def queue_status(db: AsyncSession = Depends(get_db), limit: int = 50):
+    rows = (await db.execute(select(InboundQueue).order_by(desc(InboundQueue.id)).limit(limit))).scalars().all()
+    return [{"id": r.id, "phone": r.phone_e164, "status": r.status, "attempts": r.attempts, "error": r.error, "created_at": _dt(r.created_at), "updated_at": _dt(r.updated_at)} for r in rows]
+
+
+@api.get("/customers")
+async def list_customers(db: AsyncSession = Depends(get_db), q: str | None = None, limit: int = 500):
+    stmt = select(Customer).order_by(Customer.customer_name).limit(limit)
+    if q:
+        stmt = stmt.where((Customer.customer_name.like(f"%{q}%")) | (Customer.phone_e164.like(f"%{q}%")) | (Customer.customer_code.like(f"%{q}%")))
+    rows = (await db.execute(stmt)).scalars().all()
+    so_by_name: dict[str, set[str]] = {}
+    for so, name in (await db.execute(select(OrderCache.so_no, OrderCache.customer_name))).all():
+        so_by_name.setdefault(name, set()).add(so)
+    return [{"phone": c.phone_e164, "code": c.customer_code, "name": c.customer_name, "raw_contact": c.raw_contact, "imported_at": _dt(c.imported_at),
+             "so_numbers": sorted(so_by_name.get(c.customer_name, []))} for c in rows]
+
+
+@api.get("/orders")
+async def list_orders(db: AsyncSession = Depends(get_db), q: str | None = None, limit: int = 500):
+    stmt = select(OrderCache).order_by(OrderCache.so_no, OrderCache.fg_item_code).limit(limit)
+    if q:
+        stmt = stmt.where((OrderCache.so_no.like(f"%{q}%")) | (OrderCache.po_no.like(f"%{q}%")) | (OrderCache.customer_name.like(f"%{q}%")) | (OrderCache.fg_item_code.like(f"%{q}%")))
+    rows = (await db.execute(stmt)).scalars().all()
+    return [{"id": r.id, "so_no": r.so_no, "po_no": r.po_no, "fg_item_code": r.fg_item_code, "customer_name": r.customer_name,
+             "connection_status": r.connection_status, "real_status": r.real_status, "fetched_at": _dt(r.fetched_at)} for r in rows]
+
+
+@api.get("/outbox")
+async def outbox(limit: int = 50):
+    return list(wati.outbox)[-limit:]
+
+
+# ---------------- simulator ----------------
+class Selection(BaseModel):
+    kind: str  # buttons | list
+    title: str
+    description: str = ""
+
+
+class SimulateIn(BaseModel):
+    phone: str
+    text: str = ""
+    type: str = "text"  # text | audio | interactive
+    selection: Selection | None = None  # a tapped button / list row
+
+
+def build_sim_payload(body: SimulateIn) -> dict:
+    """WATI-shaped webhook payload. For a tapped option we mirror the field names WATI uses
+    (listReply / buttonReply) and also set text, exactly like the real webhook does."""
+    msg_id = f"sim-{uuid.uuid4().hex[:12]}"
+    payload = {
+        "id": msg_id, "waId": body.phone.strip(), "type": body.type, "text": body.text if body.type == "text" else None,
+        "data": "fixtures/voice_sample.ogg" if body.type == "audio" else None, "senderName": "Simulator", "eventType": "message",
+        "owner": False, "timestamp": str(int(utcnow().timestamp())),
+    }
+    if body.selection:
+        sel = body.selection
+        payload["text"] = sel.title
+        if sel.kind == "list":
+            payload["type"] = "interactive"
+            payload["listReply"] = {"title": sel.title, "description": sel.description}
+        else:
+            payload["type"] = "button"
+            payload["buttonReply"] = {"text": sel.title}
+    return payload
+
+
+@api.post("/simulate")
+async def simulate(body: SimulateIn, db: AsyncSession = Depends(get_db)):
+    """Build a WATI-shaped webhook payload and push it through the real path (dedup -> queue -> processor)."""
+    payload = build_sim_payload(body)
+    res = await enqueue(db, payload)
+    if res.get("status") != "queued":
+        return {"queued": res, "reply": None}
+    item = await queue_worker.wait_for(res["queue_id"], timeout=20)
+    replies = (await db.execute(select(MessageLog).where(MessageLog.phone_e164 == body.phone.strip(), MessageLog.direction == "out").order_by(desc(MessageLog.id)).limit(1))).scalars().all()
+    inbound = await db.get(MessageLog, res["message_log_id"])
+    sess = await db.get(Session, body.phone.strip())
+    return {
+        "queued": res,
+        "queue_status": item.status if item else "timeout",
+        "queue_error": item.error if item else None,
+        "inbound": _msg_dict(inbound) if inbound else None,
+        "reply": _msg_dict(replies[0]) if replies else None,
+        "session": _session_dict(sess) if sess else None,
+    }
+
+
+# ---------------- spec aliases ----------------
+@legacy.post("/import-customers")
+async def legacy_import():
+    return _run_dict(await customer_sync.run())
+
+
+@legacy.post("/refresh-orders")
+async def legacy_refresh():
+    return _run_dict(await order_refresh.run())
+
+
+@legacy.get("/mismatches")
+async def legacy_mismatches(db: AsyncSession = Depends(get_db)):
+    return await list_mismatches(db)
+
+
+@legacy.get("/sessions/{phone}")
+async def legacy_session(phone: str, db: AsyncSession = Depends(get_db)):
+    return await session_detail(phone, db)
+
+
+router.include_router(api)
+router.include_router(legacy)
