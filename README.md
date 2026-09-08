@@ -81,16 +81,36 @@ A tapped row or button arrives from WATI as text (its title), so typed and tappe
 
 ---
 
-## 3. Templates (dashboard → Templates)
+## 3. Messages — the visual editor (dashboard → Messages)
 
-Every word the customer sees is editable without a restart:
+Built for someone who does not write code. Nothing here needs a restart or a developer.
 
-- **Conversation messages** (welcome, ask SO, ask item, result, not found, verification failed, service down, goodbye…) in EN / HI / GU, with placeholders such as `{so_no}`, `{real_status}`, `{support}`.
-- **Menu buttons & labels** (Yes / No / Check another SO / Done / Show my orders, list button texts, section titles, row descriptions, footers).
-- **Custom keyword replies** you create yourself: trigger words in any language (e.g. `timing, office hours, समय`) → your text, optionally with buttons. Checked before greetings, never before a Yes/No answer or an SO/item code.
+**Conversation map** — the whole chat drawn as a picture: grey bubbles are what the customer sends,
+white bubbles are the bot's replies, arrows show what happens next ("taps an order with several items",
+"wrong item code", "taps Done"). Click any white bubble to edit that message.
 
-Each save is validated: unknown or missing placeholders, WhatsApp length limits (buttons 20, list rows 24/72, section titles 24, footers 60, body 1024), and — for button labels — that the bot will still understand the tapped label. There is a live WhatsApp-style preview with sample values, a per-template history, and **Restore default**.
-Changes are stored in the `templates` table and applied immediately (cache reloads after each save and every 60 s).
+For each message you can:
+
+- **Change the words** in English / Hindi / Gujarati, with a live WhatsApp-style preview beside the editor.
+- **Insert real values** by clicking a chip — *Order number*, *Item code*, *Real status*, *Number of items*,
+  *Support contact*. No `{braces}` to type.
+- **Choose the buttons** under the message (add / remove *Check another SO*, *Done*, *Show my orders*,
+  *Main menu*), with WhatsApp's 3-button limit enforced. Renaming a button is safe: the bot learns the new
+  name, so a renamed *Done* still ends the chat.
+- **Send a test to a real WhatsApp number** — the exact message you are looking at, including unsaved edits.
+- **See history** of every change and **Restore built-in** at any time.
+
+**Custom replies** let you add your own keyword answers (e.g. `timing, office hours, समय` → your office
+hours, with buttons). They never interrupt an order lookup or a Yes/No answer.
+
+Every save is checked before it can go live: missing or unknown placeholders, WhatsApp length limits
+(buttons 20 characters, list rows 24/72, section titles 24, footers 60, body 1024), and button labels that
+the bot could no longer understand. A change that would break a message is refused with a plain explanation.
+
+**How a change reaches the customer:** saved text goes to the `templates` table → the in-memory cache
+reloads immediately → `replies.build()` → `processor` → the WATI API → WhatsApp. The header of the page
+shows the live WATI connection status (green = connected, amber = test mode with no token, red = a problem
+with the token or URL).
 
 ---
 
@@ -111,26 +131,47 @@ Inbound webhook fields used: `id`, `waId`, `type`, `text`, `data`, `listReply`, 
 
 ---
 
-## 5. Data sources
+## 5. Data sources (dashboard → **Data**)
 
-### Customers — SAP B1 Excel (Dropbox or local file)
-Columns by header name: `CUSTOMERS_COL_CODE`, `CUSTOMERS_COL_NAME`, `CUSTOMERS_COL_CONTACT` (column E `Y` ignored). Phones are normalised to `91XXXXXXXXXX`; invalid and duplicate numbers are rejected and listed per run. Customer names are stored **exactly** as in Excel (no trim).
-Dropbox: create a scoped app (`files.content.read`), get a refresh token, set `DROPBOX_APP_KEY / DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN` and `DROPBOX_FILE_PATH`; the sync runs on `CUSTOMER_SYNC_CRON`. Without Dropbox credentials the local `CUSTOMERS_FILE_PATH` is used, and the dashboard also accepts an Excel upload.
+Both connections are set up on screen — no `.env` editing, no restart. What you save is stored in the
+database and wins over `.env`; **Reset** puts the `.env` value back. Passwords are encrypted before they
+are stored and are never shown again, only `••••1234`.
 
-### Orders — BOM PPC table (external API: endpoint + API key)
-```
-ORDERS_SOURCE=http
-ORDERS_API_URL=https://<ppc-host>/api/orders
-ORDERS_API_METHOD=GET                 # or POST (+ ORDERS_API_BODY)
-ORDERS_API_KEY=xxxxx
-ORDERS_API_KEY_IN=header              # header | query | bearer
-ORDERS_API_KEY_NAME=X-API-Key         # header name, or query param name
-ORDERS_FORMAT=auto                    # auto | json | csv | xlsx | html
-ORDERS_COLUMN_MAP={"so_no":"SO No","po_no":"PO No","fg_item_code":"FG Item Code","customer_name":"Customer Name","connection_status":"Connection Status","real_status":"Real Status (PPC)"}
-ORDER_REFRESH_MINUTES=5
-```
-`auto` detects JSON / CSV / Excel / HTML from the Content-Type, the URL, then the content itself. JSON may be an array, `{data|rows|result…: [...]}`, an array-of-arrays with a header row, or column-oriented; HTML uses the biggest `<table>`. If the "API" is actually a database, use `ORDERS_SOURCE=sql` with `ORDERS_SQL_URL` + `ORDERS_SQL_QUERY`.
-Check it with **Settings → Test fetch** (headers seen, resolved columns, 5-row preview). A missing required column fails loudly, keeps the last good cache and raises an alert; a stale cache (> `ORDERS_STALE_MINUTES`) also alerts.
+### Order data (PPC) — Data → Order data
+Choose one of three sources:
+
+| Source | What you fill in |
+|---|---|
+| **API endpoint** | URL, GET/POST, the API key and how to send it (header / in the URL / bearer token) |
+| **Database query** | A read-only connection string and a SELECT |
+| **File on this server** | A path the PPC system writes to |
+
+Then set the file format (leave on *Detect automatically* — JSON, CSV, Excel and HTML tables are all
+recognised), press **Test connection**, and match the columns: the six dropdowns fill themselves with the
+column names actually found in your table. Order number, Customer name and Real status are required.
+Set how often to check for new data (default every 5 minutes) and when to warn you that data has gone
+stale. **Load data now** runs it immediately.
+
+### Customer Excel (SAP) — Data → Customer Excel
+Choose where the SAP B1 export lives:
+
+| Source | What you fill in |
+|---|---|
+| **Folder or network share** | `D:\SAP\exports\customers.xlsx` or `\\server\sap\customers.xlsx` |
+| **Dropbox** | App key, app secret, refresh token (scoped app with `files.content.read`) and the file path |
+| **Download link** | Any HTTPS link — SharePoint / OneDrive / web — with an optional key |
+
+Match the three columns (customer code, customer name, WhatsApp number), pick the daily import time, and
+press **Test connection**: it reads the file without importing and shows exactly which rows would be
+accepted and which skipped, and why. **Import now** runs it immediately; **Upload an Excel once** on the
+Import history tab handles a one-off file.
+
+Phone numbers are normalised to `91XXXXXXXXXX`; invalid and duplicate numbers are rejected and listed per
+run. Customer names are stored **exactly** as in the Excel — the byte-exact match against the PPC table
+depends on it.
+
+Every run, successful or not, is listed under **Import history** with the columns it saw, the rows it
+skipped and the reason.
 
 ---
 

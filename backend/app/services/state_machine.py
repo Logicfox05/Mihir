@@ -114,7 +114,7 @@ async def step(db: AsyncSession, session: Session, parsed: Parsed, from_audio: b
     # 4. bye / menu / greeting without codes
     if parsed.intent == "bye" and not (so_no or po_no or fg_code):
         reset(session)
-        return Outcome("bye", ReplyContext(support=support), "bye", lang)
+        return Outcome("bye", ReplyContext(support=support), "bye", lang, options=menus.buttons_for("bye", lang))
     if parsed.intent == "menu" or (parsed.intent == "greeting" and not (so_no or po_no or fg_code)):
         return await _menu(db, session, customer, support, lang, welcome=True)
 
@@ -149,7 +149,8 @@ async def _menu(db, session, customer, support, lang, welcome: bool) -> Outcome:
     session.step = "AWAIT_SO"
     code = "welcome" if welcome else "ask_so"
     if not rows:
-        return Outcome("welcome_no_orders" if welcome else "ask_so", ReplyContext(support=support), code, lang)
+        tpl = "welcome_no_orders" if welcome else "ask_so"
+        return Outcome(tpl, ReplyContext(support=support), code, lang, options=menus.buttons_for(tpl, lang))
     opts = menus.so_list(rows, lang)
     return Outcome("welcome_list" if welcome else "ask_so_list", ReplyContext(support=support), code, lang, options=opts)
 
@@ -158,7 +159,7 @@ async def _lookup_so(db, session, customer, so_no, po_no, fg_code, support, lang
     result = await lookup_orders(db, customer, so_no=so_no, po_no=po_no)
     if result.kind == "not_found":
         session.step = "AWAIT_SO"
-        return Outcome("not_found", ReplyContext(so_no=so_no or po_no, support=support), "not_found", lang, options=menus.not_found_buttons(lang))
+        return Outcome("not_found", ReplyContext(so_no=so_no or po_no, support=support), "not_found", lang, options=menus.buttons_for("not_found", lang))
     if result.kind == "mismatch":
         reset(session)
         return Outcome("verify_failed", ReplyContext(support=support), "mismatch", lang)
@@ -180,7 +181,7 @@ async def _lookup_so(db, session, customer, so_no, po_no, fg_code, support, lang
             ReplyContext(real_status=r.real_status, so_no=r.so_no, fg_code=r.fg_item_code if _multi_item_so(result.rows) else None, support=support),
             "status_delivered",
             lang,
-            options=menus.after_result_buttons(lang),
+            options=menus.buttons_for("result", lang),
         )
     session.step = "AWAIT_FG"
     return _ask_fg_outcome(result.so_no, rows, support, lang)
@@ -203,19 +204,19 @@ async def _lookup_fg(db, session, customer, fg_code, support, lang) -> Outcome:
             ReplyContext(real_status=r.real_status, so_no=r.so_no, fg_code=r.fg_item_code, support=support),
             "status_delivered",
             lang,
-            options=menus.after_result_buttons(lang),
+            options=menus.buttons_for("result", lang),
         )
     session.attempts += 1
     if session.attempts >= settings.fg_max_attempts:
         reset(session)
         session.step = "AWAIT_SO"
-        return Outcome("not_found", ReplyContext(so_no=session.so_no, fg_code=fg_code, support=support), "not_found", lang, options=menus.not_found_buttons(lang))
+        return Outcome("not_found", ReplyContext(so_no=session.so_no, fg_code=fg_code, support=support), "not_found", lang, options=menus.buttons_for("not_found", lang))
     return Outcome(
         "ask_fg_retry",
         ReplyContext(so_no=session.so_no, fg_code=fg_code, n_items=len(result.rows), support=support),
         "ask_fg",
         lang,
-        options=menus.fg_list(result.rows, lang),
+        options=menus.fg_list(result.rows, lang) or menus.buttons_for("ask_fg_retry", lang),
     )
 
 
@@ -230,7 +231,7 @@ def _ask_fg_outcome(so_no, rows, support, lang) -> Outcome:
     opts = menus.fg_list(rows, lang)
     n = len({r.fg_item_code for r in rows})
     tpl = "ask_fg_list" if opts else "ask_fg"
-    return Outcome(tpl, ReplyContext(so_no=so_no, n_items=n, support=support), "ask_fg", lang, options=opts)
+    return Outcome(tpl, ReplyContext(so_no=so_no, n_items=n, support=support), "ask_fg", lang, options=opts or menus.buttons_for(tpl, lang))
 
 
 def _multi_item_so(rows) -> bool:

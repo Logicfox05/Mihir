@@ -132,4 +132,15 @@ class TemplateHistory(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AppSetting(Base):
+    """Connection settings edited in the dashboard. Secrets are stored encrypted (see services.crypto).
+    Values are JSON so types survive a round trip."""
+
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    is_secret: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 Index("ix_orders_so_fg", OrderCache.so_no, OrderCache.fg_item_code)

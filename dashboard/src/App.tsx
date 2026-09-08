@@ -14,12 +14,12 @@ import Templates from "./pages/Templates";
 const NAV = [
   ["/", "Overview"],
   ["/simulator", "Simulator"],
-  ["/templates", "Templates"],
+  ["/templates", "Messages"],
   ["/sessions", "Sessions"],
-  ["/messages", "Messages"],
+  ["/messages", "Chat log"],
   ["/mismatches", "Mismatches"],
-  ["/imports", "Imports"],
-  ["/data", "Data"],
+  ["/imports", "Data sources"],
+  ["/data", "Browse data"],
   ["/settings", "Settings"],
 ] as const;
 

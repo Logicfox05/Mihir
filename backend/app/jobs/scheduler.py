@@ -24,6 +24,19 @@ def start() -> None:
     log.info("scheduler_started", customer_sync_cron=s.customer_sync_cron, order_refresh_minutes=s.order_refresh_minutes)
 
 
+def reschedule() -> None:
+    """Re-read the schedule from the current settings (called after the dashboard saves them)."""
+    if not scheduler.running:
+        return
+    s = get_settings()
+    try:
+        scheduler.reschedule_job("customer_sync", trigger=CronTrigger.from_crontab(s.customer_sync_cron))
+        scheduler.reschedule_job("order_refresh", trigger=IntervalTrigger(minutes=s.order_refresh_minutes))
+        log.info("scheduler_rescheduled", customer_sync_cron=s.customer_sync_cron, order_refresh_minutes=s.order_refresh_minutes)
+    except Exception as e:  # noqa: BLE001 - a bad cron must not take the scheduler down
+        log.error("reschedule_failed", error=str(e))
+
+
 def shutdown() -> None:
     if scheduler.running:
         scheduler.shutdown(wait=False)

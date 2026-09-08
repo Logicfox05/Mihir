@@ -9,3 +9,4 @@ backend/backups/
 dashboard/node_modules/
 dashboard/dist/
 *.log
+backend/.secret_key

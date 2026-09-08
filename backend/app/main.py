@@ -14,8 +14,8 @@ from .config import get_settings
 from .db import dispose_db, init_db
 from .jobs import customer_sync, order_refresh, queue_worker, scheduler
 from .logging_setup import setup_logging
-from .routers import admin, health, templates as templates_router, webhook
-from .services import templates
+from .routers import admin, connections, health, templates as templates_router, webhook
+from .services import settings_store, templates
 
 log = structlog.get_logger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static" / "admin"
@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
     setup_logging()
     s = get_settings()
     await init_db()
+    await settings_store.load_from_db()
     await templates.load_from_db()
     worker = asyncio.create_task(queue_worker.run_forever())
     scheduler.start()
@@ -60,6 +61,7 @@ app.include_router(webhook.router)
 app.include_router(health.router)
 app.include_router(admin.router)
 app.include_router(templates_router.router)
+app.include_router(connections.router)
 
 
 @app.get("/", include_in_schema=False)

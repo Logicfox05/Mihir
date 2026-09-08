@@ -62,24 +62,53 @@ export const api = {
   queue: () => req<QueueRow[]>("/queue"),
   simulate: (phone: string, text: string, type: "text" | "audio" = "text", selection?: Selection) =>
     req<SimResult>("/simulate", { method: "POST", body: JSON.stringify({ phone, text, type, selection }) }),
+  // data connections
+  connections: () => req<Connections>("/connections"),
+  saveConnections: (values: Record<string, unknown>) => req<{ ok: boolean; errors: Record<string, string>; fields?: Record<string, ConnField> }>("/connections", { method: "PUT", body: JSON.stringify({ values }) }),
+  resetConnections: (keys: string[]) => req<{ ok: boolean; fields: Record<string, ConnField> }>("/connections/reset", { method: "POST", body: JSON.stringify({ keys }) }),
+  testOrders: (values: Record<string, unknown>) => req<Preview>("/connections/orders/test", { method: "POST", body: JSON.stringify({ values }) }),
+  testCustomers: (values: Record<string, unknown>) => req<CustomerTest>("/connections/customers/test", { method: "POST", body: JSON.stringify({ values }) }),
   // template editor
   templates: () => req<Catalog>("/templates"),
   templatePreview: (p: { kind: string; key: string; lang: string; text: string }) => req<{ errors: string[]; rendered: string }>("/templates/preview", { method: "POST", body: JSON.stringify(p) }),
   templateSave: (kind: string, key: string, texts: Record<string, string>) => req<{ ok: boolean; errors: Record<string, string[]> }>(`/templates/${kind}/${key}`, { method: "PUT", body: JSON.stringify({ texts }) }),
   templateReset: (kind: string, key: string) => req<{ ok: boolean }>(`/templates/${kind}/${key}`, { method: "DELETE" }),
   templateHistory: (kind: string, key: string) => req<{ id: number; lang: string; text: string | null; action: string; changed_at: string }[]>(`/templates/${kind}/${key}/history`),
+  templateButtons: (key: string, buttons: string[]) => req<{ ok: boolean; errors: string[]; buttons: string[] }>(`/templates/buttons/${key}`, { method: "PUT", body: JSON.stringify({ buttons }) }),
+  templateTestSend: (p: { kind: string; key: string; lang: string; phone: string; text?: string }) => req<TestSendResult>("/templates/test-send", { method: "POST", body: JSON.stringify(p) }),
+  watiStatus: () => req<WatiStatus>("/templates/wati-status"),
   customSave: (c: CustomReply) => req<{ ok: boolean; errors: string[] }>("/templates/custom", { method: "POST", body: JSON.stringify(c) }),
   customTest: (text: string) => req<{ match: CustomReply | null }>("/templates/custom/test", { method: "POST", body: JSON.stringify({ text }) }),
 };
 
+export interface ConnField { value: unknown; is_set: boolean | null; secret: boolean; from_db: boolean; choices: string[]; type: string }
+export interface Connections {
+  fields: Record<string, ConnField>; column_fields: string[]; required_columns: string[]; customers_source_effective: string;
+  last_orders_preview: Preview | null; jobs: { id: string; next_run: string | null; trigger: string }[]; env_note: string;
+}
+export interface CustomerTest {
+  ok: boolean; source: string; error: string | null; headers: string[]; warnings?: string[];
+  accepted: number; rejected: number; rejected_rows: Record<string, string | number | null>[];
+  sample: { phone: string; code: string | null; name: string; raw_contact: string | null }[];
+}
+
 export type Lang = "en" | "hi" | "gu";
 export interface LangText { default: string; text: string; overridden: boolean }
-export interface CatalogTemplate { key: string; title: string; when: string; allowed: string[]; required: string[]; max_len: number; trilingual: boolean; menu: string; langs: Record<Lang, LangText> }
+export interface CatalogTemplate {
+  key: string; title: string; when: string; allowed: string[]; required: string[]; max_len: number; trilingual: boolean; menu: string;
+  langs: Record<Lang, LangText>; buttons: string[]; buttons_editable: boolean; buttons_default: string[]; buttons_overridden: boolean; in_flow: boolean;
+}
+export interface FlowNode { key: string; kind: "customer" | "bot"; title: string; when?: string; text?: string; col: number; row: number }
+export interface FlowEdge { from: string; to: string; label: string }
+export interface WatiStatus { connected: boolean; mocked: boolean; detail: string; base_url: string; api_version: string }
+export interface TestSendResult { ok: boolean; mocked?: boolean; sent_to?: string; text?: string; options?: MenuOptions | null; detail: string }
 export interface CatalogLabel { key: string; title: string; when: string; max_len: number; placeholders: string[]; intent: string | null; langs: Record<Lang, LangText> }
 export interface CustomReply { key: string; title: string; triggers: string[]; texts: Record<string, string>; buttons: string[]; enabled: boolean }
 export interface Catalog {
   templates: CatalogTemplate[]; labels: CatalogLabel[]; custom: CustomReply[]; sample: Record<string, string | number>;
   languages: Record<Lang, string>; button_choices: { key: string; label: string }[]; loaded_at: string | null;
+  placeholder_labels: Record<string, string>;
+  flow: { nodes: FlowNode[]; edges: FlowEdge[] };
 }
 
 function qs(p: Record<string, string | number>) {

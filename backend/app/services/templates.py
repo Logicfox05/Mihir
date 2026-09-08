@@ -99,6 +99,85 @@ LABEL_SPECS: dict[str, LabelSpec] = {
 LABEL_INTENTS = {"yes": "confirm_yes", "no": "confirm_no", "another": "menu", "my_orders": "menu", "menu": "menu", "done": "bye"}
 _LABEL_INTENT = LABEL_INTENTS
 CUSTOM_BUTTON_CHOICES = ("my_orders", "another", "done", "menu")
+BUTTON_CHOICES = CUSTOM_BUTTON_CHOICES
+
+# Plain-language names for placeholders, shown as chips in the editor instead of {so_no}
+PLACEHOLDER_LABELS = {
+    "so_no": "Order number",
+    "fg_code": "Item code",
+    "real_status": "Real status",
+    "n_items": "Number of items",
+    "value": "Number heard in the voice note",
+    "support": "Support contact",
+    "item": "Item part (added automatically)",
+}
+
+
+@dataclass(frozen=True)
+class ButtonSlot:
+    """Which buttons may appear under a message. `fixed` slots cannot be changed
+    (Yes/No after a voice note is required by the confirmation logic)."""
+
+    key: str
+    default: tuple
+    fixed: bool = False
+
+
+BUTTON_SLOTS: dict[str, ButtonSlot] = {
+    s.key: s
+    for s in [
+        ButtonSlot("result", ("another", "done")),
+        ButtonSlot("not_found", ("my_orders", "done")),
+        ButtonSlot("welcome_no_orders", ()),
+        ButtonSlot("welcome", ()),
+        ButtonSlot("ask_so", ()),
+        ButtonSlot("ask_fg", ()),
+        ButtonSlot("ask_fg_retry", ()),
+        ButtonSlot("bye", ()),
+        ButtonSlot("confirm_so", ("yes", "no"), fixed=True),
+        ButtonSlot("confirm_po", ("yes", "no"), fixed=True),
+        ButtonSlot("confirm_fg", ("yes", "no"), fixed=True),
+    ]
+}
+
+# ---------------- conversation flow map (drives the visual editor) ----------------
+# Customer nodes are grey bubbles the admin cannot edit; bot nodes open the editor.
+FLOW_NODES = [
+    {"key": "_in_greet", "kind": "customer", "title": "Customer writes first", "text": "hi / hello / namaste / menu", "col": 0, "row": 0},
+    {"key": "welcome_list", "kind": "bot", "col": 1, "row": 0},
+    {"key": "ask_fg_list", "kind": "bot", "col": 2, "row": 0},
+    {"key": "result", "kind": "bot", "col": 3, "row": 0},
+    {"key": "bye", "kind": "bot", "col": 4, "row": 0},
+    {"key": "ask_fg_retry", "kind": "bot", "col": 2, "row": 1},
+    {"key": "welcome_no_orders", "kind": "bot", "col": 1, "row": 2},
+    {"key": "not_found", "kind": "bot", "col": 2, "row": 2},
+    {"key": "_in_voice", "kind": "customer", "title": "Customer sends a voice note", "text": "🎤 voice message", "col": 0, "row": 3},
+    {"key": "confirm_so", "kind": "bot", "col": 1, "row": 3},
+    {"key": "_in_unknown", "kind": "customer", "title": "Unknown number writes", "text": "any message", "col": 0, "row": 4},
+    {"key": "verify_failed", "kind": "bot", "col": 1, "row": 4},
+]
+
+FLOW_EDGES = [
+    {"from": "_in_greet", "to": "welcome_list", "label": "number found in Excel, has orders"},
+    {"from": "_in_greet", "to": "welcome_no_orders", "label": "found, but no orders"},
+    {"from": "_in_unknown", "to": "verify_failed", "label": "number not in Excel"},
+    {"from": "welcome_list", "to": "ask_fg_list", "label": "taps an order with several items"},
+    {"from": "welcome_list", "to": "result", "label": "taps an order with one item"},
+    {"from": "welcome_list", "to": "not_found", "label": "types an unknown order number"},
+    {"from": "ask_fg_list", "to": "result", "label": "taps an item"},
+    {"from": "ask_fg_list", "to": "ask_fg_retry", "label": "wrong item code"},
+    {"from": "ask_fg_retry", "to": "ask_fg_list", "label": "tries again"},
+    {"from": "ask_fg_retry", "to": "not_found", "label": "wrong twice"},
+    {"from": "result", "to": "bye", "label": "taps Done"},
+    {"from": "result", "to": "welcome_list", "label": "taps Check another SO"},
+    {"from": "not_found", "to": "welcome_list", "label": "taps Show my orders"},
+    {"from": "_in_voice", "to": "confirm_so", "label": "transcribed"},
+    {"from": "confirm_so", "to": "result", "label": "taps Yes"},
+    {"from": "confirm_so", "to": "welcome_list", "label": "taps No"},
+]
+
+FLOW_KEYS = {n["key"] for n in FLOW_NODES if n["kind"] == "bot"}
+
 
 
 @dataclass
@@ -243,12 +322,52 @@ def validate_custom(reply: CustomReply) -> list[str]:
     return errors
 
 
+def validate_buttons(template_key: str, keys: list[str]) -> list[str]:
+    slot = BUTTON_SLOTS.get(template_key)
+    if slot is None:
+        return [f"'{template_key}' cannot have buttons"]
+    if slot.fixed:
+        return ["the Yes / No buttons of a voice confirmation cannot be changed (you can still rename them)"]
+    errors = []
+    if len(keys) > 3:
+        errors.append("WhatsApp allows at most 3 buttons")
+    unknown = [k for k in keys if k not in BUTTON_CHOICES]
+    if unknown:
+        errors.append("unknown button(s): " + ", ".join(unknown))
+    if len(set(keys)) != len(keys):
+        errors.append("the same button is used twice")
+    return errors
+
+
+async def save_buttons(template_key: str, keys: list[str]) -> list[str]:
+    errors = validate_buttons(template_key, keys)
+    if errors:
+        return errors
+    slot = BUTTON_SLOTS[template_key]
+    async with session_scope() as db:
+        row = (await db.execute(select(Template).where(Template.kind == "buttons", Template.key == template_key, Template.lang == "meta"))).scalar_one_or_none()
+        if list(keys) == list(slot.default):
+            if row:
+                await _history(db, "buttons", template_key, "meta", row.text, "reset")
+                await db.delete(row)
+        elif row:
+            if row.text != json.dumps(keys):
+                await _history(db, "buttons", template_key, "meta", row.text, "save")
+                row.text = json.dumps(keys)
+        else:
+            await _history(db, "buttons", template_key, "meta", None, "save")
+            db.add(Template(kind="buttons", key=template_key, lang="meta", text=json.dumps(keys)))
+    await load_from_db()
+    return []
+
+
 # ---------------- registry (in-memory cache) ----------------
 class Registry:
     def __init__(self) -> None:
         self.templates: dict[tuple[str, str], str] = {}
         self.labels: dict[tuple[str, str], str] = {}
         self.custom: dict[str, CustomReply] = {}
+        self.buttons_cfg: dict[str, list[str]] = {}
         self.loaded_at = None
 
     # reads (hot path)
@@ -289,6 +408,19 @@ class Registry:
                     return c
         return None
 
+    def buttons(self, template_key: str) -> list[str]:
+        """Label keys of the buttons shown under a message (admin override or the built-in default)."""
+        slot = BUTTON_SLOTS.get(template_key)
+        if slot is None:
+            return []
+        if slot.fixed:
+            return list(slot.default)
+        cfg = self.buttons_cfg.get(template_key)
+        return list(cfg) if cfg is not None else list(slot.default)
+
+    def buttons_overridden(self, template_key: str) -> bool:
+        return template_key in self.buttons_cfg
+
     def is_overridden(self, kind: str, key: str, lang: str) -> bool:
         store = self.templates if kind == "template" else self.labels
         return (key, lang) in store
@@ -301,6 +433,7 @@ async def load_from_db() -> None:
     templates: dict[tuple[str, str], str] = {}
     labels: dict[tuple[str, str], str] = {}
     custom_rows: dict[str, dict] = {}
+    buttons_cfg: dict[str, list[str]] = {}
     async with session_scope() as db:
         rows = (await db.execute(select(Template))).scalars().all()
     for r in rows:
@@ -310,6 +443,13 @@ async def load_from_db() -> None:
             labels[(r.key, r.lang)] = r.text
         elif r.kind == "custom":
             custom_rows.setdefault(r.key, {})[r.lang] = r.text
+        elif r.kind == "buttons":
+            try:
+                val = json.loads(r.text)
+                if isinstance(val, list):
+                    buttons_cfg[r.key] = [str(x) for x in val]
+            except ValueError:
+                log.warning("bad_button_config", key=r.key)
     custom: dict[str, CustomReply] = {}
     for key, per_lang in custom_rows.items():
         try:
@@ -321,8 +461,9 @@ async def load_from_db() -> None:
             texts={lg: per_lang.get(lg, "") for lg in LANGS}, buttons=list(meta.get("buttons") or []), enabled=bool(meta.get("enabled", True)),
         )
     registry.templates, registry.labels, registry.custom = templates, labels, custom
+    registry.buttons_cfg = buttons_cfg
     registry.loaded_at = utcnow()
-    log.info("templates_loaded", templates=len(templates), labels=len(labels), custom=len(custom))
+    log.info("templates_loaded", templates=len(templates), labels=len(labels), custom=len(custom), buttons=len(buttons_cfg))
 
 
 async def _history(db, kind: str, key: str, lang: str, old_text: str | None, action: str) -> None:
@@ -408,6 +549,17 @@ async def history(kind: str, key: str, limit: int = 50) -> list[dict]:
 
 
 # ---------------- preview / catalog for the editor ----------------
+def _support() -> str:
+    from ..config import get_settings
+
+    return get_settings().support_contact
+
+
+def sample_values() -> dict:
+    """Sample order data, but the real support contact - the preview must match what is sent."""
+    return {**SAMPLE, "support": _support()}
+
+
 def render_sample(kind: str, key: str, lang: str, text: str) -> str:
     if kind == "label":
         try:
@@ -416,11 +568,40 @@ def render_sample(kind: str, key: str, lang: str, text: str) -> str:
             return text
     from .replies import ReplyContext, render_text
 
-    ctx = ReplyContext(real_status=SAMPLE["real_status"], so_no=SAMPLE["so_no"], fg_code=SAMPLE["fg_code"], n_items=SAMPLE["n_items"], value=SAMPLE["value"], support=SAMPLE["support"])
+    ctx = ReplyContext(real_status=SAMPLE["real_status"], so_no=SAMPLE["so_no"], fg_code=SAMPLE["fg_code"], n_items=SAMPLE["n_items"], value=SAMPLE["value"], support=_support())
     try:
         return render_text(text, lang, ctx)
     except Exception as e:  # noqa: BLE001
         return f"<cannot render: {e}>"
+
+
+def sample_options(template_key: str, lang: str):
+    """A realistic menu for previews and test sends: real (edited) label texts, sample data."""
+    from . import menus
+
+    spec = TEMPLATE_SPECS.get(template_key)
+    menu = spec.menu if spec else ""
+    if menu == "so_list":
+        return menus.Options(
+            kind="list",
+            items=[
+                menus.Option(title="SO 45240", description=menus.label("n_items", lang, n=3) + " · PO PO-8801"),
+                menus.Option(title="SO 45231", description=menus.label("one_item", lang) + " · PO PO-7781"),
+            ],
+            button_text=menus.label("select_so", lang),
+            section_title=menus.label("your_orders", lang),
+        )
+    if menu == "fg_list":
+        return menus.Options(
+            kind="list",
+            items=[menus.Option(title=c) for c in ("FG-2001", "FG-2002", "FG-2003")],
+            button_text=menus.label("select_item", lang),
+            section_title=menus.label("items_of_so", lang, so=SAMPLE["so_no"]),
+            footer=menus.label("type_hint", lang),
+        )
+    if menu == "confirm":
+        return menus.confirm_buttons(lang)
+    return menus.buttons_for(template_key, lang)
 
 
 def catalog() -> dict:
@@ -431,8 +612,12 @@ def catalog() -> dict:
         for lg in LANGS:
             cur = registry.text(spec.key, lg)
             langs[lg] = {"default": defaults[spec.key][lg], "text": cur, "overridden": registry.is_overridden("template", spec.key, lg)}
+        slot = BUTTON_SLOTS.get(spec.key)
         templates.append({"key": spec.key, "title": spec.title, "when": spec.when, "allowed": sorted(spec.allowed), "required": sorted(spec.required),
-                          "max_len": spec.max_len, "trilingual": spec.trilingual, "menu": spec.menu, "langs": langs})
+                          "max_len": spec.max_len, "trilingual": spec.trilingual, "menu": spec.menu, "langs": langs,
+                          "buttons": registry.buttons(spec.key), "buttons_editable": bool(slot) and not slot.fixed,
+                          "buttons_default": list(slot.default) if slot else [], "buttons_overridden": registry.buttons_overridden(spec.key),
+                          "in_flow": spec.key in FLOW_KEYS})
     labels = []
     for spec in LABEL_SPECS.values():
         langs = {}
@@ -441,8 +626,19 @@ def catalog() -> dict:
         labels.append({"key": spec.key, "title": spec.title, "when": spec.when, "max_len": spec.max_len, "placeholders": sorted(spec.placeholders),
                        "intent": _LABEL_INTENT.get(spec.key), "langs": langs})
     custom = [c.to_dict() for c in registry.custom.values()]
-    return {"templates": templates, "labels": labels, "custom": custom, "sample": SAMPLE, "languages": LANG_NAMES,
-            "button_choices": [{"key": k, "label": registry.label(k, "en")} for k in CUSTOM_BUTTON_CHOICES], "loaded_at": registry.loaded_at.isoformat() if registry.loaded_at else None}
+    nodes = []
+    for n in FLOW_NODES:
+        node = dict(n)
+        if n["kind"] == "bot":
+            spec = TEMPLATE_SPECS[n["key"]]
+            node["title"] = spec.title
+            node["when"] = spec.when
+        nodes.append(node)
+    return {"templates": templates, "labels": labels, "custom": custom, "sample": sample_values(), "languages": LANG_NAMES,
+            "button_choices": [{"key": k, "label": registry.label(k, "en")} for k in BUTTON_CHOICES],
+            "placeholder_labels": PLACEHOLDER_LABELS,
+            "flow": {"nodes": nodes, "edges": FLOW_EDGES},
+            "loaded_at": registry.loaded_at.isoformat() if registry.loaded_at else None}
 
 
 def default_label(key: str, lang: str) -> str:

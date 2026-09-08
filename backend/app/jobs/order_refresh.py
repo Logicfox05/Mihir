@@ -40,24 +40,24 @@ class Preview:
 last_preview: Preview | None = None
 
 
-async def test_fetch() -> Preview:
-    """Fetch + map without writing anything. Used by the dashboard 'Test fetch'."""
+async def test_fetch(settings=None) -> Preview:
+    """Fetch + map without writing anything. Used by the dashboard 'Test' buttons.
+    Pass a draft settings object to try values that have not been saved yet."""
     global last_preview
-    s = get_settings()
+    s = settings or get_settings()
     src = get_source(s)
     try:
         fr = await src.fetch()
         mr = map_rows(fr.raw_rows, s.orders_column_map)
         sample = [asdict(r) for r in mr.rows[:5]]
-        for row in sample:  # never show connection_status even to admins in preview? It is internal-only for customers; admins may see it.
-            pass
         p = Preview(ok=not mr.missing, source=fr.description, headers=mr.headers, resolved=mr.resolved, warnings=mr.warnings,
                     missing=mr.missing, total_raw=len(fr.raw_rows), mapped=len(mr.rows), sample=sample, at=utcnow().isoformat())
         if mr.missing:
             p.error = "required column(s) not found: " + ", ".join(f"{m} -> '{s.orders_column_map.get(m)}'" for m in mr.missing)
     except Exception as e:  # noqa: BLE001
         p = Preview(ok=False, source=src.describe(), error=str(e), at=utcnow().isoformat())
-    last_preview = p
+    if settings is None:
+        last_preview = p
     return p
 
 

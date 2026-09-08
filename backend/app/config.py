@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     admin_key: str = "change-me-admin-key"
     support_contact: str = "[phone/email]"
+    # Encrypts connection passwords stored in the database. Auto-created in backend/.secret_key if unset.
+    secret_key: str = ""
 
     # WATI
     wati_base_url: str = "https://live-mt-server.wati.io/tenant"
@@ -47,11 +49,18 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
 
     # Customers
+    # where the SAP customer Excel comes from: local (folder / network share) | dropbox | url
+    customers_source: Literal["local", "dropbox", "url"] = "local"
     dropbox_app_key: str = ""
     dropbox_app_secret: str = ""
     dropbox_refresh_token: str = ""
     dropbox_file_path: str = "/SAP/customers.xlsx"
     customers_file_path: str = "fixtures/customers_dummy.xlsx"
+    customers_url: str = ""
+    customers_url_key: str = ""
+    customers_url_key_in: Literal["header", "query", "bearer"] = "header"
+    customers_url_key_name: str = "X-API-Key"
+    customers_sheet: str = ""
     customers_col_code: str = "Customer Code"
     customers_col_name: str = "Customer Name"
     customers_col_contact: str = "Contact"
@@ -115,11 +124,40 @@ class Settings(BaseSettings):
     def dropbox_configured(self) -> bool:
         return bool(self.dropbox_app_key and self.dropbox_app_secret and self.dropbox_refresh_token)
 
+    @property
+    def customers_source_effective(self) -> str:
+        """Back-compat: an .env that only set Dropbox credentials still means 'dropbox'."""
+        if self.customers_source == "local" and self.dropbox_configured:
+            return "dropbox"
+        return self.customers_source
+
     def resolve_path(self, p: str) -> Path:
         path = Path(p)
         return path if path.is_absolute() else BACKEND_DIR / path
 
 
+# Connection settings saved in the dashboard live here and win over .env.
+# services.settings_store loads them at startup and after every save.
+_overrides: dict[str, object] = {}
+
+
+def apply_overrides(values: dict) -> None:
+    global _overrides
+    _overrides = dict(values)
+    get_settings.cache_clear()
+
+
+def overrides() -> dict:
+    return dict(_overrides)
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    for k, v in _overrides.items():
+        if hasattr(s, k):
+            try:
+                setattr(s, k, v)
+            except Exception:  # noqa: BLE001 - a bad stored value must never stop the app booting
+                pass
+    return s

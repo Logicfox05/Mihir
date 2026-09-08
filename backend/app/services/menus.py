@@ -96,6 +96,13 @@ def label(key: str, lang: str, **fmt) -> str:
         return DEFAULT_LABELS[key][lang].format(**fmt)
 
 
+def buttons_for(template_key: str, lang: str) -> Options | None:
+    """Buttons configured for a message in the template editor (or its built-in default)."""
+    from .templates import registry
+
+    return custom_buttons(registry.buttons(template_key), lang)
+
+
 def custom_buttons(keys: list[str], lang: str) -> Options | None:
     items = [Option(_cut(label(k, lang), BUTTON_TEXT_MAX)) for k in keys[:BUTTONS_MAX] if k in DEFAULT_LABELS]
     return Options(kind="buttons", items=items) if items else None

@@ -59,8 +59,10 @@ def write_customers() -> None:
 def write_orders() -> None:
     rows = [dict(zip(ORDER_HEADERS, r)) for r in ORDERS]
     (FX / "orders_dummy.json").write_text(json.dumps({"data": rows}, indent=2, ensure_ascii=False), encoding="utf-8")
+    # QUOTE_ALL so the deliberate trailing space in "Patel Agro Industries " sits inside quotes and
+    # survives editors that strip trailing whitespace on save.
     with (FX / "orders_dummy.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
+        w = csv.writer(f, quoting=csv.QUOTE_ALL)
         w.writerow(ORDER_HEADERS)
         w.writerows(ORDERS)
     wb = Workbook()

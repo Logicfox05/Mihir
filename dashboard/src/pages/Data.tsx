@@ -13,7 +13,7 @@ export default function Data() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <h1 className="text-xl font-semibold">Data</h1>
+        <h1 className="text-xl font-semibold">Browse data</h1>
         <div className="flex gap-1 ml-2">
           {(["customers", "orders", "outbox", "queue"] as const).map((t) => (
             <button key={t} className={`btn ${tab === t ? "bg-brand-600 text-white border-brand-600" : "bg-white border-slate-300"}`} onClick={() => setTab(t)}>{t}</button>

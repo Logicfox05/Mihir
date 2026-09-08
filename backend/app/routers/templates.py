@@ -1,17 +1,20 @@
-"""Template editor API (X-Admin-Key): conversation templates, menu labels, custom keyword replies."""
+"""Template editor API (X-Admin-Key): conversation messages, menu labels, buttons, custom replies,
+plus the live WATI connection status and a test send to a real WhatsApp number."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..services import templates as T
+from ..services.wati import wati
+from ..utils.phone import normalize_phone
 from .admin import require_admin
 
 router = APIRouter(prefix="/admin/api/templates", dependencies=[Depends(require_admin)])
 
 
 class TextsIn(BaseModel):
-    texts: dict[str, str] = Field(description="{'en': ..., 'hi': ..., 'gu': ...} — only the languages present are saved")
+    texts: dict[str, str] = Field(description="{'en': ..., 'hi': ..., 'gu': ...} - only the languages present are saved")
 
 
 class PreviewIn(BaseModel):
@@ -19,6 +22,18 @@ class PreviewIn(BaseModel):
     key: str
     lang: str
     text: str
+
+
+class ButtonsIn(BaseModel):
+    buttons: list[str]
+
+
+class TestSendIn(BaseModel):
+    kind: str = "template"
+    key: str
+    lang: str = "en"
+    phone: str
+    text: str | None = None  # unsaved draft; falls back to the saved text
 
 
 class CustomIn(BaseModel):
@@ -30,9 +45,16 @@ class CustomIn(BaseModel):
     enabled: bool = True
 
 
+# ---------------- read ----------------
 @router.get("")
 async def get_catalog():
     return T.catalog()
+
+
+@router.get("/wati-status")
+async def wati_status():
+    """Is the dashboard actually wired to WhatsApp right now?"""
+    return await wati.check()
 
 
 @router.post("/reload")
@@ -50,6 +72,58 @@ async def preview(body: PreviewIn):
     else:
         errors = [] if len(body.text) <= 1024 else ["too long"]
     return {"errors": errors, "rendered": T.render_sample(body.kind, body.key, body.lang, body.text)}
+
+
+# ---------------- test send (real WhatsApp) ----------------
+@router.post("/test-send")
+async def test_send(body: TestSendIn):
+    """Send this exact message to one WhatsApp number through WATI, with sample values filled in."""
+    if body.kind not in ("template", "custom"):
+        raise HTTPException(400, "only whole messages can be test-sent (choose a message, not a button label)")
+    pr = normalize_phone(body.phone)
+    if not pr.ok:
+        return {"ok": False, "detail": f"That number is not valid: {pr.reason}. Use 10 digits or 91XXXXXXXXXX."}
+
+    if body.kind == "template":
+        if body.key not in T.TEMPLATE_SPECS:
+            raise HTTPException(404, f"unknown message '{body.key}'")
+        text = body.text if body.text is not None else T.registry.text(body.key, body.lang)
+        errors = T.validate_template(body.key, body.lang, text)
+        if errors:
+            return {"ok": False, "detail": "Fix these first: " + "; ".join(errors)}
+        rendered = T.render_sample("template", body.key, body.lang, text)
+        options = T.sample_options(body.key, body.lang)
+    else:
+        reply = T.registry.custom.get(body.key)
+        if reply is None:
+            raise HTTPException(404, f"unknown custom reply '{body.key}'")
+        text = body.text if body.text is not None else T.registry.custom_text(body.key, body.lang)
+        rendered = T.render_sample("template", "welcome", body.lang, text) if "{support}" in text else text
+        from ..services import menus
+
+        options = menus.custom_buttons(reply.buttons, body.lang)
+
+    try:
+        await wati.send_options(pr.phone, rendered, options)
+    except Exception as e:  # noqa: BLE001 - report, never crash the dashboard
+        return {"ok": False, "detail": f"WATI refused the message: {e}", "text": rendered}
+    mocked = wati.mocked
+    detail = (
+        "No WATI token is set, so nothing was sent to WhatsApp. The message is in Data -> outbox exactly as it would go out."
+        if mocked
+        else f"Sent to {pr.phone} on WhatsApp. Note: WATI can only deliver if that number messaged you in the last 24 hours."
+    )
+    return {"ok": True, "mocked": mocked, "sent_to": pr.phone, "text": rendered,
+            "options": options.to_dict() if options else None, "detail": detail}
+
+
+# ---------------- write ----------------
+@router.put("/buttons/{key}")
+async def save_buttons(key: str, body: ButtonsIn):
+    errors = await T.save_buttons(key, body.buttons)
+    if errors:
+        return {"ok": False, "errors": errors}
+    return {"ok": True, "errors": [], "buttons": T.registry.buttons(key)}
 
 
 @router.put("/{kind}/{key}")
@@ -70,8 +144,10 @@ async def save_texts(kind: str, key: str, body: TextsIn):
     if errors:
         return {"ok": False, "errors": errors}
     for lang, text in body.texts.items():
-        await T.save_text(kind, key, lang, text)
-    return {"ok": True, "errors": {}}
+        e = await T.save_text(kind, key, lang, text)
+        if e:  # a rule that only fails on write (e.g. a cross-label collision created by an earlier language)
+            errors[lang] = e
+    return {"ok": not errors, "errors": errors}
 
 
 @router.delete("/{kind}/{key}")
@@ -80,8 +156,14 @@ async def reset_to_default(kind: str, key: str):
         if not await T.delete_custom(key):
             raise HTTPException(404, "no such custom reply")
         return {"ok": True}
+    if kind == "buttons":
+        slot = T.BUTTON_SLOTS.get(key)
+        if slot is None:
+            raise HTTPException(404, f"'{key}' has no buttons")
+        await T.save_buttons(key, list(slot.default))
+        return {"ok": True, "buttons": T.registry.buttons(key)}
     if kind not in ("template", "label"):
-        raise HTTPException(404, "kind must be template, label or custom")
+        raise HTTPException(404, "kind must be template, label, buttons or custom")
     await T.reset_key(kind, key)
     return {"ok": True}
 
@@ -93,7 +175,8 @@ async def get_history(kind: str, key: str):
 
 @router.post("/custom")
 async def save_custom(body: CustomIn):
-    reply = T.CustomReply(key=body.key.strip().lower(), title=body.title, triggers=body.triggers, texts={lg: body.texts.get(lg, "") for lg in T.LANGS}, buttons=body.buttons, enabled=body.enabled)
+    reply = T.CustomReply(key=body.key.strip().lower(), title=body.title, triggers=body.triggers,
+                          texts={lg: body.texts.get(lg, "") for lg in T.LANGS}, buttons=body.buttons, enabled=body.enabled)
     errors = await T.save_custom(reply)
     if errors:
         return {"ok": False, "errors": errors}

@@ -164,6 +164,27 @@ class WatiClient:
             return await self.send_buttons(phone, body, options)
         return await self.send_list(phone, body, options)
 
+    async def check(self) -> dict:
+        """Is the WATI connection usable? Calls a harmless read endpoint to prove the token works.
+        Never raises - the dashboard shows whatever comes back."""
+        st = get_settings()
+        if self.mocked:
+            return {"connected": False, "mocked": True, "detail": "No WATI token set - messages are simulated, nothing is sent to WhatsApp.",
+                    "base_url": st.wati_base_url, "api_version": st.wati_api_version}
+        base = {"mocked": False, "base_url": st.wati_base_url, "api_version": st.wati_api_version}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(self._url("/api/v1/getContacts"), headers=self._headers(), params={"pageSize": 1, "pageNumber": 1})
+        except httpx.HTTPError as e:
+            return {**base, "connected": False, "detail": f"Cannot reach WATI: {e}"}
+        if r.status_code in (401, 403):
+            return {**base, "connected": False, "detail": "WATI rejected the token (401/403). Check WATI_TOKEN in .env."}
+        if r.status_code == 404:
+            return {**base, "connected": False, "detail": "Endpoint not found (404). Check WATI_BASE_URL - it must include your tenant id."}
+        if r.status_code >= 400:
+            return {**base, "connected": False, "detail": f"WATI returned {r.status_code}: {r.text[:200]}"}
+        return {**base, "connected": True, "detail": "Token accepted by WATI. Messages you save here are sent to customers through this connection."}
+
     async def get_media(self, file_name: str) -> bytes:
         if self.mocked:
             fixture = get_settings().resolve_path("fixtures/voice_sample.ogg")
