@@ -128,7 +128,16 @@ class WatiClient:
         if self.mocked:
             log.info("wati_mock_send", phone=phone, text=text)
             return self._record(phone, text)
-        data = await self._post(f"/api/v1/sendSessionMessage/{phone}", params={"messageText": text})
+        try:
+            data = await self._post(f"/api/v1/sendSessionMessage/{phone}", params={"messageText": text})
+        except Exception as e:  # noqa: BLE001 - nothing below plain text to fall back to, so be loud
+            from . import alerts  # lazy: alerts imports config only, but keep the import graph flat
+
+            self._record(phone, text, extra={"sent": False, "error": str(e)[:300]})
+            log.error("wati_send_failed", phone=phone, error=str(e))
+            await alerts.notify_throttled("wati_send_failed", "WhatsApp message could not be sent",
+                                          f"phone={phone}\n{e}\n\nCheck WATI_BASE_URL / WATI_TOKEN and the WATI dashboard.")
+            raise
         self._record(phone, text, extra={"sent": True})
         return data
 
@@ -141,7 +150,11 @@ class WatiClient:
             self._record(phone, body, kind="buttons", extra={"options": options.to_dict(), "sent": True})
             return data
         except Exception as e:  # noqa: BLE001 - never leave the customer without a way to answer
+            from . import alerts
+
             log.warning("wati_buttons_failed_fallback_text", error=str(e))
+            await alerts.notify_throttled("wati_interactive_degraded", "WhatsApp buttons were refused - sending plain text",
+                                          str(e), level="warning")
             return await self.send_text(phone, body + "\n\n" + options.as_text())
 
     async def send_list(self, phone: str, body: str, options: Options) -> dict:
@@ -153,7 +166,11 @@ class WatiClient:
             self._record(phone, body, kind="list", extra={"options": options.to_dict(), "sent": True})
             return data
         except Exception as e:  # noqa: BLE001
+            from . import alerts
+
             log.warning("wati_list_failed_fallback_text", error=str(e))
+            await alerts.notify_throttled("wati_interactive_degraded", "WhatsApp list was refused - sending plain text",
+                                          str(e), level="warning")
             return await self.send_text(phone, body + "\n\n" + options.as_text())
 
     async def send_options(self, phone: str, body: str, options: Options | None) -> dict:
@@ -169,7 +186,8 @@ class WatiClient:
         Never raises - the dashboard shows whatever comes back."""
         st = get_settings()
         if self.mocked:
-            return {"connected": False, "mocked": True, "detail": "No WATI token set - messages are simulated, nothing is sent to WhatsApp.",
+            detail = st.wati_config_problem or "WATI_DRY_RUN is on - messages are simulated, nothing is sent to WhatsApp."
+            return {"connected": False, "mocked": True, "detail": detail,
                     "base_url": st.wati_base_url, "api_version": st.wati_api_version}
         base = {"mocked": False, "base_url": st.wati_base_url, "api_version": st.wati_api_version}
         try:

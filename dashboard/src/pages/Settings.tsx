@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { api, Preview } from "../api";
+import { useEffect, useState } from "react";
+import { api, Connections, Preview } from "../api";
 import { Badge, ErrorBox, fmt, usePoll } from "../ui";
 
 export default function Settings() {
@@ -20,7 +20,9 @@ export default function Settings() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">Settings · Orders source</h1>
+      <h1 className="text-xl font-semibold">Settings</h1>
+      <ConversationCard />
+      <h2 className="text-lg font-semibold pt-2">Orders source</h2>
       <p className="text-sm text-slate-500">All values come from the backend <code>.env</code>. Change them there and restart. Use "Test fetch" to verify the endpoint, API key and column map without touching the cache.</p>
       <ErrorBox msg={error} />
       {data && (
@@ -81,6 +83,67 @@ export default function Settings() {
           <li>Optional: <code>GROQ_API_KEY</code> (voice notes), <code>OPENAI_API_KEY</code> (better intent/language), <code>ALERT_SLACK_WEBHOOK</code>.</li>
           <li>Set <code>APP_MODE=prod</code>, <code>ADMIN_KEY</code>, <code>SUPPORT_CONTACT</code>, MySQL <code>DATABASE_URL</code>. Restart. Message the number from your own phone.</li>
         </ol>
+      </div>
+    </div>
+  );
+}
+
+/** How the conversation behaves: the silence that starts a new window, and how SO / item choices are shown. */
+function ConversationCard() {
+  const { data, error, reload } = usePoll<Connections>(() => api.connections(), 0);
+  const [timeout, setTimeoutMin] = useState<number>(30);
+  const [style, setStyle] = useState<"auto" | "list">("auto");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!data) return;
+    setTimeoutMin(Number(data.fields.session_timeout_min?.value ?? 30));
+    setStyle((data.fields.so_menu_style?.value as "auto" | "list") || "auto");
+  }, [data]);
+
+  const saved = data ? { timeout: Number(data.fields.session_timeout_min?.value ?? 30), style: String(data.fields.so_menu_style?.value || "auto") } : null;
+  const dirty = !!saved && (saved.timeout !== timeout || saved.style !== style);
+
+  const save = async () => {
+    setBusy(true); setMsg(null); setErrors({});
+    try {
+      const values: Record<string, unknown> = {};
+      if (saved?.timeout !== timeout) values.session_timeout_min = timeout;
+      if (saved?.style !== style) values.so_menu_style = style;
+      const r = await api.saveConnections(values);
+      if (r.ok) { setMsg("Saved. The bot uses this from the next message."); await reload(); }
+      else { setErrors(r.errors); setMsg("Please fix the marked field."); }
+    } catch (e) { setMsg((e as Error).message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="card space-y-3 text-sm">
+      <div>
+        <div className="font-medium">Conversation</div>
+        <div className="text-xs text-slate-500">How a chat starts and how choices are shown. Saved in the database — no restart needed.</div>
+      </div>
+      <ErrorBox msg={error} />
+      <div className="grid md:grid-cols-2 gap-4">
+        <label className="block">
+          <div className="font-medium text-slate-700">New conversation after (minutes of silence)</div>
+          <input type="number" min={1} max={1440} className={`input w-28 ${errors.session_timeout_min ? "border-rose-400" : ""}`} value={timeout} onChange={(e) => setTimeoutMin(Number(e.target.value))} />
+          {errors.session_timeout_min && <div className="text-xs text-rose-600 mt-0.5">{errors.session_timeout_min}</div>}
+          <div className="text-xs text-slate-500 mt-0.5">When a customer writes after this much silence, the bot sends the greeting and asks for the language again. Within the window it continues where they left off.</div>
+        </label>
+        <label className="block">
+          <div className="font-medium text-slate-700">How SO numbers and items are offered</div>
+          <select className="input w-full" value={style} onChange={(e) => setStyle(e.target.value as "auto" | "list")}>
+            <option value="auto">Tap buttons when 3 or fewer, otherwise a list (recommended)</option>
+            <option value="list">Always a list (the "Select" button opens it)</option>
+          </select>
+          <div className="text-xs text-slate-500 mt-0.5">WhatsApp allows at most 3 buttons or 10 list rows per message. Either way the customer just taps once.</div>
+        </label>
+      </div>
+      <div className="flex items-center gap-2">
+        <button className="btn-primary" disabled={busy || !dirty} onClick={save}>Save</button>
+        {msg && <span className="text-slate-600">{msg}</span>}
       </div>
     </div>
   );

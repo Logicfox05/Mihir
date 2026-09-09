@@ -14,6 +14,13 @@ sys.path.insert(0, str(BACKEND))
 _TEST_DB = BACKEND / "test_order_bot.db"
 # Run against MySQL with:  $env:TEST_DATABASE_URL = "mysql+aiomysql://root:root@localhost:3306/order_bot_test"
 _DB_URL = os.environ.get("TEST_DATABASE_URL") or f"sqlite+aiosqlite:///{_TEST_DB.as_posix()}"
+
+# The tests always use the 10 built-in dummy customers, written fresh here, so editing
+# fixtures/customers_dummy.xlsx (e.g. to put your own WhatsApp number in for a live test) never
+# breaks the test suite.
+from scripts.make_fixtures import write_customers  # noqa: E402
+
+CUSTOMERS_XLSX = write_customers(BACKEND / "tests" / "_generated" / "customers_dummy.xlsx")
 os.environ.update(
     {
         "APP_MODE": "dev",
@@ -27,7 +34,7 @@ os.environ.update(
         "SUPPORT_CONTACT": "support@test",
         "ORDERS_SOURCE": "file",
         "ORDERS_FILE_PATH": "fixtures/orders_dummy.json",
-        "CUSTOMERS_FILE_PATH": "fixtures/customers_dummy.xlsx",
+        "CUSTOMERS_FILE_PATH": CUSTOMERS_XLSX.relative_to(BACKEND).as_posix(),
         "FG_MAX_ATTEMPTS": "2",
         "RATE_LIMIT_MSGS": "1000",
     }

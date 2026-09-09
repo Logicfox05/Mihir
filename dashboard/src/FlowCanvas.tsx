@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { CatalogTemplate, FlowEdge, FlowNode, Lang } from "./api";
+import { menuNote } from "./MessageEditor";
 
 const NODE_W = 250;
 const NODE_H = 128;
@@ -122,7 +123,7 @@ export default function FlowCanvas({ nodes, edges, templates, lang, labelOf, sel
                   </div>
                 )}
                 {isBot && t && t.menu && (
-                  <div className="absolute bottom-1.5 right-2 text-[10px] text-slate-400">☰ {t.menu === "so_list" ? "order list" : t.menu === "fg_list" ? "item list" : ""}</div>
+                  <div className="absolute bottom-1.5 right-2 text-[10px] text-slate-400">☰ {menuNote(t.menu)}</div>
                 )}
               </div>
             );

@@ -4,8 +4,8 @@ import { api } from "../api";
 import { Badge, ErrorBox, Stat, ago, fmt, usePoll } from "../ui";
 
 const OUTCOME_COLORS: Record<string, string> = {
-  status_delivered: "#059669", welcome: "#2563eb", ask_so: "#3b82f6", ask_fg: "#7c3aed", confirm: "#d97706",
-  not_found: "#f59e0b", verify_failed: "#e11d48", mismatch: "#be123c", service_down: "#991b1b", rate_limited: "#6b7280",
+  status_delivered: "#059669", welcome: "#94a3b8", ask_language: "#64748b", menu: "#2563eb", contact: "#0891b2", ask_so: "#3b82f6", ask_fg: "#7c3aed", confirm: "#d97706",
+  not_found: "#f59e0b", verify_failed: "#e11d48", mismatch: "#be123c", service_down: "#991b1b", rate_limited: "#6b7280", bye: "#a3a3a3", custom: "#0ea5e9",
 };
 
 export default function Overview() {
@@ -151,7 +151,9 @@ export default function Overview() {
           <div className="font-medium mt-4 mb-1">Integrations</div>
           <div className="flex flex-wrap gap-1">
             <Badge tone={data.config.wati_mocked ? "amber" : "green"}>WATI {data.config.wati_mocked ? "mocked" : "live"}</Badge>
-            <Badge tone={data.config.openai ? "green" : "slate"}>OpenAI {data.config.openai ? "on" : "regex fallback"}</Badge>
+            <Badge tone={data.config.openai ? (data.config.openai_paused ? "amber" : "green") : "slate"}>
+              OpenAI {data.config.openai ? (data.config.openai_paused ? "failing — using regex" : "on") : "regex fallback"}
+            </Badge>
             <Badge tone={data.config.groq ? "green" : "slate"}>Groq STT {data.config.groq ? "on" : "fixture"}</Badge>
             <Badge tone={data.config.dropbox ? "green" : "slate"}>Dropbox {data.config.dropbox ? "on" : "local file"}</Badge>
             <Badge tone="blue">orders: {String(data.config.orders_source)}</Badge>

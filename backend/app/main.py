@@ -15,7 +15,7 @@ from .db import dispose_db, init_db
 from .jobs import customer_sync, order_refresh, queue_worker, scheduler
 from .logging_setup import setup_logging
 from .routers import admin, connections, health, templates as templates_router, webhook
-from .services import settings_store, templates
+from .services import preflight, settings_store, templates
 
 log = structlog.get_logger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static" / "admin"
@@ -36,6 +36,19 @@ async def _dev_autoload() -> None:
 async def lifespan(app: FastAPI):
     setup_logging()
     s = get_settings()
+    # In prod, refuse to serve with an unsafe configuration - an open dashboard or an open webhook is
+    # worse than being down. Checked before anything else starts.
+    problems = preflight.fatal_problems(s)
+    if problems:
+        for p in problems:
+            log.error("startup_blocked", problem=p)
+        if not s.allow_insecure_prod:
+            raise RuntimeError(
+                "Refusing to start in production mode until these are fixed in backend/.env:\n  - "
+                + "\n  - ".join(problems)
+                + "\n(Set ALLOW_INSECURE_PROD=true to start anyway - not on a real server.)"
+            )
+        log.warning("startup_insecure_allowed", count=len(problems))
     await init_db()
     await settings_store.load_from_db()
     await templates.load_from_db()

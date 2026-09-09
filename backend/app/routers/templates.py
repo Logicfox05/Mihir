@@ -98,7 +98,7 @@ async def test_send(body: TestSendIn):
         if reply is None:
             raise HTTPException(404, f"unknown custom reply '{body.key}'")
         text = body.text if body.text is not None else T.registry.custom_text(body.key, body.lang)
-        rendered = T.render_sample("template", "welcome", body.lang, text) if "{support}" in text else text
+        rendered = T.render_sample("template", "main_menu", body.lang, text) if "{" in text else text
         from ..services import menus
 
         options = menus.custom_buttons(reply.buttons, body.lang)

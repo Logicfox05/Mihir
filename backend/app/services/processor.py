@@ -37,6 +37,7 @@ class ProcessResult:
     step_after: str | None
     parsed: dict | None = None
     options: dict | None = None
+    replies: list[str] | None = None  # every bot message sent for this inbound message, in order
 
 
 def selection_title(payload: dict) -> str | None:
@@ -102,33 +103,50 @@ async def process_payload(db: AsyncSession, payload: dict, message_log_id: int |
             return ProcessResult(phone, text, None, reply, "rate_limited", None)
 
         from_audio = msg_type in AUDIO_TYPES
+        voice_blocked = False  # a voice note arrived but speech-to-text is off / not configured
         if from_audio:
-            audio = await wati.get_media(media or "")
-            transcript = await stt.transcribe(audio, filename=(media or "voice.ogg").split("/")[-1])
-            text = transcript
-            if in_row:
-                in_row.transcript = transcript
+            try:
+                audio = await wati.get_media(media or "")
+                transcript = await stt.transcribe(audio, filename=(media or "voice.ogg").split("/")[-1])
+                text = transcript
+                if in_row:
+                    in_row.transcript = transcript
+            except stt.SttUnavailable as e:
+                # Never guess at a number we could not hear: that would look up someone else's order.
+                voice_blocked, from_audio, text = True, False, None
+                bound.info("voice_note_not_transcribed", reason=str(e))
+                if settings.voice_notes:  # asked for, but cannot work -> a real misconfiguration
+                    await alerts.notify_throttled("voice_notes_broken", "Voice notes are on but cannot be transcribed", str(e), level="warning")
 
-        parsed = await intent.parse(text or "")
+        # The session is loaded first so the parser knows the step: while the bot asks for an item,
+        # an unprefixed number means an item, not an order. A tapped option is an exact string the
+        # regex already understands, so it never needs the AI call.
         session = await get_or_create_session(db, phone)
-        outcome = await step(db, session, parsed, from_audio)
-        reply = replies.build(outcome.template, outcome.ctx, outcome.language)
+        parsed = await intent.parse(text or "", allow_ai=(msg_type != "interactive"), step=session.step)
+        # one customer message can produce several bot messages (greeting, then the language question)
+        outcomes = await step(db, session, parsed, from_audio, voice_blocked=voice_blocked)
 
-        await wati.send_options(phone, reply, outcome.options)
-        await _log_out(db, phone, reply, outcome.code, session.step, outcome.options)
+        sent: list[str] = []
+        for outcome in outcomes:
+            reply = replies.build(outcome.template, outcome.ctx, outcome.language)
+            await wati.send_options(phone, reply, outcome.options)
+            await _log_out(db, phone, reply, outcome.code, session.step, outcome.options)
+            sent.append(reply)
+        last = outcomes[-1]
         if in_row:
-            in_row.outcome = outcome.code
+            in_row.outcome = last.code
             in_row.step_after = session.step
             if msg_type == "interactive":
                 in_row.msg_type = "interactive"
                 in_row.text = text
-        bound.info("processed", outcome=outcome.code, step=session.step, intent=parsed.intent, source=parsed.source,
-                   menu=outcome.options.kind if outcome.options else None)
+        bound.info("processed", outcome=last.code, step=session.step, intent=parsed.intent, source=parsed.source,
+                   messages=len(sent), menu=last.options.kind if last.options else None)
         return ProcessResult(
-            phone, text, transcript, reply, outcome.code, session.step,
+            phone, text, transcript, sent[-1], last.code, session.step,
             parsed={"intent": parsed.intent, "so_no": parsed.so_no, "po_no": parsed.po_no, "fg_code": parsed.fg_code,
                     "bare_codes": parsed.bare_codes, "language": parsed.language, "source": parsed.source},
-            options=outcome.options.to_dict() if outcome.options else None,
+            options=last.options.to_dict() if last.options else None,
+            replies=sent,
         )
     except Exception as e:  # noqa: BLE001 - never leave the customer hanging
         bound.error("processing_failed", error=str(e), tb=traceback.format_exc())

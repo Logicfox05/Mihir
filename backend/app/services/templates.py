@@ -26,7 +26,8 @@ LANGS = ("en", "hi", "gu")
 LANG_NAMES = {"en": "English", "hi": "Hindi", "gu": "Gujarati"}
 
 # Sample values used for validation and for the live preview in the editor
-SAMPLE = {"so_no": "45240", "fg_code": "FG-2002", "n_items": 3, "value": "45240", "support": "+91-98765 43210", "item": ", item FG-2002", "real_status": "In Production"}
+SAMPLE = {"so_no": "45240", "po_no": "PO-8801", "fg_code": "FG-2002", "n_items": 3, "value": "45240", "customer_name": "Mehta Foods",
+          "support": "+91-98765 43210", "item": ", item FG-2002", "real_status": "In Production"}
 
 # ---------------- specs ----------------
 @dataclass(frozen=True)
@@ -38,30 +39,35 @@ class TemplateSpec:
     required: frozenset = frozenset()
     max_len: int = 1024
     trilingual: bool = False  # sent stacked in all three languages
+    neutral: bool = False  # sent before the language is known: one text for everyone
     menu: str = ""  # which menu is attached (for the preview)
 
 
-_S = frozenset({"support"})
+_S = frozenset({"support", "customer_name"})
+_ORDER = frozenset({"so_no", "po_no", "fg_code", "n_items", "support", "customer_name"})
 TEMPLATE_SPECS: dict[str, TemplateSpec] = {
     s.key: s
     for s in [
-        TemplateSpec("welcome_list", "Welcome + order list", "Customer greets (hi / hello / menu) and has orders in the PPC table. Sent with the list of their SO numbers.", _S, menu="so_list"),
-        TemplateSpec("welcome_no_orders", "Welcome, no orders found", "Customer greets but no rows in the PPC table match their name.", _S),
-        TemplateSpec("welcome", "Welcome (plain)", "Fallback welcome without a list.", _S),
-        TemplateSpec("ask_so_list", "Ask SO + order list", "Bot needs an SO number and can show the list again (e.g. after 'No' on a voice confirmation).", _S, menu="so_list"),
-        TemplateSpec("ask_so", "Ask SO (plain)", "Bot needs an SO number, no list available.", _S),
-        TemplateSpec("ask_fg_list", "Ask item + item list", "The SO has several FG items; sent with the list of item codes.", frozenset({"so_no", "n_items", "support"}), frozenset({"so_no"}), menu="fg_list"),
-        TemplateSpec("ask_fg", "Ask item (plain)", "The SO has more than 10 items, so no list can be shown.", frozenset({"so_no", "n_items", "support"}), frozenset({"so_no"})),
-        TemplateSpec("ask_fg_retry", "Item not in SO, ask again", "Customer sent an item code that is not in the chosen SO (before the retry limit).", frozenset({"so_no", "fg_code", "n_items", "support"}), frozenset({"so_no"}), menu="fg_list"),
-        TemplateSpec("confirm_so", "Confirm SO (after voice note)", "A voice note was transcribed; bot echoes the SO number with Yes / No buttons.", frozenset({"value", "support"}), frozenset({"value"}), menu="confirm"),
-        TemplateSpec("confirm_po", "Confirm PO (after voice note)", "Same as above for a PO number.", frozenset({"value", "support"}), frozenset({"value"}), menu="confirm"),
-        TemplateSpec("confirm_fg", "Confirm item (after voice note)", "Same as above for an FG item code.", frozenset({"value", "support"}), frozenset({"value"}), menu="confirm"),
-        TemplateSpec("result", "Real Status result", "The answer. {real_status} is the only order field ever sent. {item} expands to ', item FG-…' when the SO has several items, else empty.", frozenset({"so_no", "fg_code", "item", "real_status", "support"}), frozenset({"real_status", "so_no"}), menu="after_result"),
-        TemplateSpec("not_found", "SO / item not found", "The SO or PO does not exist, or the item was wrong too many times.", frozenset({"so_no", "fg_code", "support"}), menu="not_found"),
-        TemplateSpec("verify_failed", "Verification failed", "Number not in the customer Excel, or the PPC customer name does not match byte-for-byte. Sent in all three languages together.", _S, trilingual=True),
-        TemplateSpec("service_down", "Service unavailable", "Unexpected error while processing. Sent in all three languages together.", _S, trilingual=True),
-        TemplateSpec("rate_limited", "Too many messages", "Customer exceeded the per-phone rate limit.", _S),
-        TemplateSpec("bye", "Goodbye", "Customer taps Done or says thanks / bye.", _S),
+        TemplateSpec("welcome_first", "Greeting (first message)", "The first message of a new conversation window (after 30 minutes of silence). Sent before the language is known, so it is one text for everyone.", frozenset({"support"}), neutral=True),
+        TemplateSpec("ask_language", "Ask for the language", "Sent right after the greeting, with the English / Hindi / Gujarati buttons.", frozenset({"support"}), neutral=True, menu="language"),
+        TemplateSpec("main_menu", "Main menu", "Shown once the language is chosen, and whenever the customer says 'menu' or 'hi' during the conversation.", _S, menu="buttons"),
+        TemplateSpec("contact_us", "Contact us", "Customer taps 'Contact us'. {support} is your support number / email from Settings.", _S, menu="buttons"),
+        TemplateSpec("ask_so_list", "Choose an order", "Customer taps 'Order status' and has orders in the PPC table. Sent with their SO numbers as buttons (up to 3) or a list.", _S, menu="so_options"),
+        TemplateSpec("so_none", "No orders found", "Customer taps 'Order status' but no rows in the PPC table match their name.", _S, menu="buttons"),
+        TemplateSpec("ask_so", "Ask SO (plain)", "Bot needs an SO number and cannot show choices.", _S),
+        TemplateSpec("ask_fg_list", "Choose an item", "The SO has several FG items; sent with the item codes as buttons (up to 3) or a list.", _ORDER, frozenset({"so_no"}), menu="fg_options"),
+        TemplateSpec("ask_fg", "Ask item (plain)", "The SO has more than 10 items, so no choices can be shown.", _ORDER, frozenset({"so_no"})),
+        TemplateSpec("ask_fg_retry", "Item not in SO, ask again", "Customer sent an item code that is not in the chosen SO (before the retry limit).", _ORDER, frozenset({"so_no"}), menu="fg_options"),
+        TemplateSpec("confirm_so", "Confirm SO (after voice note)", "A voice note was transcribed; bot echoes the SO number with Yes / No buttons.", frozenset({"value", "support", "customer_name"}), frozenset({"value"}), menu="confirm"),
+        TemplateSpec("confirm_po", "Confirm PO (after voice note)", "Same as above for a PO number.", frozenset({"value", "support", "customer_name"}), frozenset({"value"}), menu="confirm"),
+        TemplateSpec("confirm_fg", "Confirm item (after voice note)", "Same as above for an FG item code.", frozenset({"value", "support", "customer_name"}), frozenset({"value"}), menu="confirm"),
+        TemplateSpec("result", "Real Status result", "The answer. {real_status} is the only status field ever sent. {item} expands to ', item FG-…' when the SO has several items, else empty.", frozenset({"so_no", "po_no", "fg_code", "item", "real_status", "support", "customer_name"}), frozenset({"real_status", "so_no"}), menu="buttons"),
+        TemplateSpec("not_found", "SO / item not found", "The SO or PO does not exist, or the item was wrong too many times.", frozenset({"so_no", "fg_code", "support", "customer_name"}), menu="buttons"),
+        TemplateSpec("bye", "Goodbye", "Customer taps Done or says thanks / bye. The next message starts a new window with the greeting.", _S, menu="buttons"),
+        TemplateSpec("voice_off", "Voice note received", "Customer sent a voice message while voice notes are switched off (Settings -> Conversation). Speech-to-text can misread digits, so the bot asks for the number in writing rather than guessing.", _S, menu="buttons"),
+        TemplateSpec("verify_failed", "Verification failed", "Number not in the customer Excel, or the PPC customer name does not match byte-for-byte. Sent in all three languages together.", frozenset({"support"}), trilingual=True),
+        TemplateSpec("service_down", "Service unavailable", "Unexpected error while processing. Sent in all three languages together.", frozenset({"support"}), trilingual=True),
+        TemplateSpec("rate_limited", "Too many messages", "Customer exceeded the per-phone rate limit.", frozenset({"support"})),
     ]
 }
 
@@ -78,12 +84,18 @@ class LabelSpec:
 LABEL_SPECS: dict[str, LabelSpec] = {
     s.key: s
     for s in [
+        LabelSpec("lang_en", "Language button: English", "One of the three language buttons under the greeting.", 20),
+        LabelSpec("lang_hi", "Language button: Hindi", "One of the three language buttons under the greeting.", 20),
+        LabelSpec("lang_gu", "Language button: Gujarati", "One of the three language buttons under the greeting.", 20),
+        LabelSpec("order_status", "Menu button: Order status", "Opens the customer's order choices.", 20),
+        LabelSpec("change_language", "Menu button: Change language", "Shows the language buttons again.", 20),
+        LabelSpec("contact_us", "Menu button: Contact us", "Sends your support contact.", 20),
         LabelSpec("yes", "Button: Yes", "Voice-note confirmation button. Must still be understood as 'yes' by the bot.", 20),
         LabelSpec("no", "Button: No", "Voice-note confirmation button. Must still be understood as 'no'.", 20),
-        LabelSpec("another", "Button: Check another SO", "Shown after a status. Re-opens the SO list.", 20),
-        LabelSpec("done", "Button: Done", "Shown after a status / not found. Ends the session.", 20),
-        LabelSpec("my_orders", "Button: Show my orders", "Shown after 'not found'. Re-opens the SO list.", 20),
-        LabelSpec("menu", "Button: Main menu", "Reserved button label that re-opens the SO list.", 20),
+        LabelSpec("another", "Button: Check another SO", "Shown after a status. Re-opens the order choices.", 20),
+        LabelSpec("done", "Button: Done", "Shown after a status / not found. Ends the conversation.", 20),
+        LabelSpec("my_orders", "Button: Show my orders", "Shown after 'not found'. Re-opens the order choices.", 20),
+        LabelSpec("menu", "Button: Main menu", "Goes back to the main menu.", 20),
         LabelSpec("select_so", "List button: Select SO", "The button that opens the SO list.", 20),
         LabelSpec("select_item", "List button: Select item", "The button that opens the FG item list.", 20),
         LabelSpec("your_orders", "List section title: Your orders", "Section title above the SO rows.", 24),
@@ -96,14 +108,22 @@ LABEL_SPECS: dict[str, LabelSpec] = {
 }
 
 # button labels that stand for an intent: the parser recognises the CURRENT label text (intent.label_intent)
-LABEL_INTENTS = {"yes": "confirm_yes", "no": "confirm_no", "another": "menu", "my_orders": "menu", "menu": "menu", "done": "bye"}
+LABEL_INTENTS = {
+    "yes": "confirm_yes", "no": "confirm_no",
+    "another": "order_status", "my_orders": "order_status", "order_status": "order_status",
+    "menu": "menu", "done": "bye", "change_language": "change_language", "contact_us": "contact_us",
+    "lang_en": "lang_en", "lang_hi": "lang_hi", "lang_gu": "lang_gu",
+}
 _LABEL_INTENT = LABEL_INTENTS
-CUSTOM_BUTTON_CHOICES = ("my_orders", "another", "done", "menu")
+# buttons an admin may put under a message or a custom reply
+CUSTOM_BUTTON_CHOICES = ("order_status", "change_language", "contact_us", "another", "my_orders", "menu", "done")
 BUTTON_CHOICES = CUSTOM_BUTTON_CHOICES
 
 # Plain-language names for placeholders, shown as chips in the editor instead of {so_no}
 PLACEHOLDER_LABELS = {
-    "so_no": "Order number",
+    "customer_name": "Customer name",
+    "so_no": "Order number (SO)",
+    "po_no": "PO number",
     "fg_code": "Item code",
     "real_status": "Real status",
     "n_items": "Number of items",
@@ -121,19 +141,24 @@ class ButtonSlot:
     key: str
     default: tuple
     fixed: bool = False
+    min_count: int = 0  # >0 where a customer who only taps would otherwise have no way forward
 
 
 BUTTON_SLOTS: dict[str, ButtonSlot] = {
     s.key: s
     for s in [
-        ButtonSlot("result", ("another", "done")),
-        ButtonSlot("not_found", ("my_orders", "done")),
-        ButtonSlot("welcome_no_orders", ()),
-        ButtonSlot("welcome", ()),
+        ButtonSlot("ask_language", ("lang_en", "lang_hi", "lang_gu"), fixed=True),
+        ButtonSlot("main_menu", ("order_status", "change_language", "contact_us"), min_count=1),
+        ButtonSlot("contact_us", ("order_status", "menu"), min_count=1),
+        ButtonSlot("so_none", ("menu", "contact_us"), min_count=1),
+        ButtonSlot("result", ("another", "menu", "done"), min_count=1),
+        ButtonSlot("not_found", ("my_orders", "menu"), min_count=1),
         ButtonSlot("ask_so", ()),
         ButtonSlot("ask_fg", ()),
         ButtonSlot("ask_fg_retry", ()),
         ButtonSlot("bye", ()),
+        ButtonSlot("voice_off", ("order_status", "menu")),
+        ButtonSlot("welcome_first", ()),
         ButtonSlot("confirm_so", ("yes", "no"), fixed=True),
         ButtonSlot("confirm_po", ("yes", "no"), fixed=True),
         ButtonSlot("confirm_fg", ("yes", "no"), fixed=True),
@@ -143,37 +168,47 @@ BUTTON_SLOTS: dict[str, ButtonSlot] = {
 # ---------------- conversation flow map (drives the visual editor) ----------------
 # Customer nodes are grey bubbles the admin cannot edit; bot nodes open the editor.
 FLOW_NODES = [
-    {"key": "_in_greet", "kind": "customer", "title": "Customer writes first", "text": "hi / hello / namaste / menu", "col": 0, "row": 0},
-    {"key": "welcome_list", "kind": "bot", "col": 1, "row": 0},
-    {"key": "ask_fg_list", "kind": "bot", "col": 2, "row": 0},
-    {"key": "result", "kind": "bot", "col": 3, "row": 0},
-    {"key": "bye", "kind": "bot", "col": 4, "row": 0},
-    {"key": "ask_fg_retry", "kind": "bot", "col": 2, "row": 1},
-    {"key": "welcome_no_orders", "kind": "bot", "col": 1, "row": 2},
-    {"key": "not_found", "kind": "bot", "col": 2, "row": 2},
-    {"key": "_in_voice", "kind": "customer", "title": "Customer sends a voice note", "text": "🎤 voice message", "col": 0, "row": 3},
-    {"key": "confirm_so", "kind": "bot", "col": 1, "row": 3},
-    {"key": "_in_unknown", "kind": "customer", "title": "Unknown number writes", "text": "any message", "col": 0, "row": 4},
-    {"key": "verify_failed", "kind": "bot", "col": 1, "row": 4},
+    {"key": "_in_first", "kind": "customer", "title": "First message of the window", "text": "hi / any message after 30 min of silence", "col": 0, "row": 0},
+    {"key": "welcome_first", "kind": "bot", "col": 1, "row": 0},
+    {"key": "ask_language", "kind": "bot", "col": 2, "row": 0},
+    {"key": "main_menu", "kind": "bot", "col": 3, "row": 0},
+    {"key": "ask_so_list", "kind": "bot", "col": 4, "row": 0},
+    {"key": "ask_fg_list", "kind": "bot", "col": 5, "row": 0},
+    {"key": "result", "kind": "bot", "col": 6, "row": 0},
+    {"key": "contact_us", "kind": "bot", "col": 4, "row": 1},
+    {"key": "so_none", "kind": "bot", "col": 4, "row": 2},
+    {"key": "ask_fg_retry", "kind": "bot", "col": 5, "row": 1},
+    {"key": "not_found", "kind": "bot", "col": 5, "row": 2},
+    {"key": "bye", "kind": "bot", "col": 6, "row": 1},
+    {"key": "_in_voice", "kind": "customer", "title": "Customer sends a voice note", "text": "🎤 voice message", "col": 3, "row": 3},
+    {"key": "confirm_so", "kind": "bot", "col": 4, "row": 3},
+    {"key": "_in_unknown", "kind": "customer", "title": "Unknown number writes", "text": "any message", "col": 0, "row": 2},
+    {"key": "verify_failed", "kind": "bot", "col": 1, "row": 2},
 ]
 
 FLOW_EDGES = [
-    {"from": "_in_greet", "to": "welcome_list", "label": "number found in Excel, has orders"},
-    {"from": "_in_greet", "to": "welcome_no_orders", "label": "found, but no orders"},
-    {"from": "_in_unknown", "to": "verify_failed", "label": "number not in Excel"},
-    {"from": "welcome_list", "to": "ask_fg_list", "label": "taps an order with several items"},
-    {"from": "welcome_list", "to": "result", "label": "taps an order with one item"},
-    {"from": "welcome_list", "to": "not_found", "label": "types an unknown order number"},
+    {"from": "_in_first", "to": "welcome_first", "label": "number found in the customer Excel"},
+    {"from": "welcome_first", "to": "ask_language", "label": "sent together"},
+    {"from": "ask_language", "to": "main_menu", "label": "taps a language"},
+    {"from": "main_menu", "to": "ask_so_list", "label": "taps Order status"},
+    {"from": "main_menu", "to": "contact_us", "label": "taps Contact us"},
+    {"from": "main_menu", "to": "ask_language", "label": "taps Change language"},
+    {"from": "ask_so_list", "to": "so_none", "label": "no orders under this name"},
+    {"from": "ask_so_list", "to": "ask_fg_list", "label": "taps an order with several items"},
+    {"from": "ask_so_list", "to": "result", "label": "taps an order with one item"},
+    {"from": "ask_so_list", "to": "not_found", "label": "types an unknown order number"},
     {"from": "ask_fg_list", "to": "result", "label": "taps an item"},
     {"from": "ask_fg_list", "to": "ask_fg_retry", "label": "wrong item code"},
     {"from": "ask_fg_retry", "to": "ask_fg_list", "label": "tries again"},
     {"from": "ask_fg_retry", "to": "not_found", "label": "wrong twice"},
     {"from": "result", "to": "bye", "label": "taps Done"},
-    {"from": "result", "to": "welcome_list", "label": "taps Check another SO"},
-    {"from": "not_found", "to": "welcome_list", "label": "taps Show my orders"},
+    {"from": "result", "to": "ask_so_list", "label": "taps Check another SO"},
+    {"from": "result", "to": "main_menu", "label": "taps Main menu"},
+    {"from": "not_found", "to": "ask_so_list", "label": "taps Show my orders"},
     {"from": "_in_voice", "to": "confirm_so", "label": "transcribed"},
     {"from": "confirm_so", "to": "result", "label": "taps Yes"},
-    {"from": "confirm_so", "to": "welcome_list", "label": "taps No"},
+    {"from": "confirm_so", "to": "ask_so_list", "label": "taps No"},
+    {"from": "_in_unknown", "to": "verify_failed", "label": "number not in Excel"},
 ]
 
 FLOW_KEYS = {n["key"] for n in FLOW_NODES if n["kind"] == "bot"}
@@ -208,6 +243,31 @@ def placeholders_in(text: str) -> set[str]:
 
 def norm_trigger(s: str) -> str:
     return re.sub(r"\s+", " ", _PUNCT.sub(" ", s)).strip().casefold()
+
+
+def trigger_matches(trigger_norm: str, message_norm: str) -> bool:
+    """The one rule for 'does this custom trigger fire on this message'. Used by the matcher AND by
+    validation, so a trigger can never be accepted that would then behave differently at runtime.
+    A short trigger must be the whole message; from 4 characters it may appear inside one."""
+    if not trigger_norm or not message_norm:
+        return False
+    return message_norm == trigger_norm or (len(trigger_norm) >= 4 and trigger_norm in message_norm)
+
+
+def button_phrases(lang: str | None = None) -> list[tuple[str, str]]:
+    """Every menu-button title the bot must keep understanding: [(normalised, human description)]."""
+    out: list[tuple[str, str]] = []
+    for key in LABEL_INTENTS:
+        spec = LABEL_SPECS.get(key)
+        for lg in ((lang,) if lang else LANGS):
+            try:
+                text = registry.label(key, lg)
+            except KeyError:
+                continue
+            n = norm_trigger(text)
+            if n:
+                out.append((n, f'{spec.title if spec else key} ("{text}")'))
+    return out
 
 
 def _defaults():
@@ -285,6 +345,13 @@ def validate_label(key: str, lang: str, text: str) -> list[str]:
             if other != key and other_intent != intent and norm_trigger(registry.label(other, lang)) == n:
                 errors.append(f"same text as the '{LABEL_SPECS[other].title}' button")
                 break
+        # ...and must not fall into an existing custom keyword reply, which would swallow the tap
+        for c in registry.custom.values():
+            if not c.enabled:
+                continue
+            if any(trigger_matches(norm_trigger(trig), n) for trig in c.triggers):
+                errors.append(f"this text matches the custom reply '{c.title}', so tapping the button would send that reply instead")
+                break
     return errors
 
 
@@ -319,7 +386,41 @@ def validate_custom(reply: CustomReply) -> list[str]:
         errors.append("unknown button(s): " + ", ".join(bad))
     if len(reply.buttons) > 3:
         errors.append("at most 3 buttons")
+    # A trigger that also fires on a menu button would silently disable that button for everyone,
+    # because a tapped button arrives as its own title.
+    from .intent import regex_parse
+
+    phrases = button_phrases()
+    for t in trig:
+        for phrase, human in phrases:
+            if trigger_matches(t, phrase):
+                errors.append(f"'{t}' also matches the {human} button - a customer tapping it would get this reply "
+                              "instead of the menu. Use a longer or more specific word.")
+                break
+        else:
+            p = regex_parse(t, use_labels=False)
+            if p.so_no or p.po_no or p.fg_code or p.bare_codes:
+                errors.append(f"'{t}' looks like an order or item code, so it cannot be a trigger word")
+            elif p.intent != "other":
+                errors.append(f"'{t}' is already a built-in keyword (the bot reads it as '{p.intent}')")
     return errors
+
+
+def audit_custom_conflicts() -> list[dict]:
+    """Custom replies ALREADY saved whose trigger now shadows a menu button (e.g. the button was
+    renamed afterwards). Surfaced on the Go-live page; validation only guards new saves."""
+    out: list[dict] = []
+    phrases = button_phrases()
+    for c in registry.custom.values():
+        if not c.enabled:
+            continue
+        for trig in c.triggers:
+            t = norm_trigger(trig)
+            for phrase, human in phrases:
+                if trigger_matches(t, phrase):
+                    out.append({"key": c.key, "title": c.title, "trigger": trig, "button": human})
+                    break
+    return out
 
 
 def validate_buttons(template_key: str, keys: list[str]) -> list[str]:
@@ -329,6 +430,8 @@ def validate_buttons(template_key: str, keys: list[str]) -> list[str]:
     if slot.fixed:
         return ["the Yes / No buttons of a voice confirmation cannot be changed (you can still rename them)"]
     errors = []
+    if len(keys) < slot.min_count:
+        errors.append("at least one button is needed here, otherwise a customer who only taps has no way to continue")
     if len(keys) > 3:
         errors.append("WhatsApp allows at most 3 buttons")
     unknown = [k for k in keys if k not in BUTTON_CHOICES]
@@ -404,7 +507,7 @@ class Registry:
                 t = norm_trigger(trig)
                 if not t:
                     continue
-                if m == t or (len(t) >= 4 and t in m):
+                if trigger_matches(t, m):
                     return c
         return None
 
@@ -568,7 +671,8 @@ def render_sample(kind: str, key: str, lang: str, text: str) -> str:
             return text
     from .replies import ReplyContext, render_text
 
-    ctx = ReplyContext(real_status=SAMPLE["real_status"], so_no=SAMPLE["so_no"], fg_code=SAMPLE["fg_code"], n_items=SAMPLE["n_items"], value=SAMPLE["value"], support=_support())
+    ctx = ReplyContext(real_status=SAMPLE["real_status"], so_no=SAMPLE["so_no"], po_no=SAMPLE["po_no"], fg_code=SAMPLE["fg_code"],
+                       n_items=SAMPLE["n_items"], value=SAMPLE["value"], customer_name=SAMPLE["customer_name"], support=_support())
     try:
         return render_text(text, lang, ctx)
     except Exception as e:  # noqa: BLE001
@@ -579,9 +683,16 @@ def sample_options(template_key: str, lang: str):
     """A realistic menu for previews and test sends: real (edited) label texts, sample data."""
     from . import menus
 
+    from ..config import get_settings
+
     spec = TEMPLATE_SPECS.get(template_key)
     menu = spec.menu if spec else ""
-    if menu == "so_list":
+    style = get_settings().so_menu_style
+    if menu == "language":
+        return menus.language_buttons(lang)
+    if menu == "so_options":
+        if style == "auto":
+            return menus.Options(kind="buttons", items=[menus.Option(title=f"SO {so}") for so in ("45240", "45231")])
         return menus.Options(
             kind="list",
             items=[
@@ -591,10 +702,13 @@ def sample_options(template_key: str, lang: str):
             button_text=menus.label("select_so", lang),
             section_title=menus.label("your_orders", lang),
         )
-    if menu == "fg_list":
+    if menu == "fg_options":
+        codes = ("FG-2001", "FG-2002", "FG-2003")
+        if style == "auto":
+            return menus.Options(kind="buttons", items=[menus.Option(title=c) for c in codes])
         return menus.Options(
             kind="list",
-            items=[menus.Option(title=c) for c in ("FG-2001", "FG-2002", "FG-2003")],
+            items=[menus.Option(title=c) for c in codes],
             button_text=menus.label("select_item", lang),
             section_title=menus.label("items_of_so", lang, so=SAMPLE["so_no"]),
             footer=menus.label("type_hint", lang),
@@ -614,7 +728,7 @@ def catalog() -> dict:
             langs[lg] = {"default": defaults[spec.key][lg], "text": cur, "overridden": registry.is_overridden("template", spec.key, lg)}
         slot = BUTTON_SLOTS.get(spec.key)
         templates.append({"key": spec.key, "title": spec.title, "when": spec.when, "allowed": sorted(spec.allowed), "required": sorted(spec.required),
-                          "max_len": spec.max_len, "trilingual": spec.trilingual, "menu": spec.menu, "langs": langs,
+                          "max_len": spec.max_len, "trilingual": spec.trilingual, "neutral": spec.neutral, "menu": spec.menu, "langs": langs,
                           "buttons": registry.buttons(spec.key), "buttons_editable": bool(slot) and not slot.fixed,
                           "buttons_default": list(slot.default) if slot else [], "buttons_overridden": registry.buttons_overridden(spec.key),
                           "in_flow": spec.key in FLOW_KEYS})
@@ -634,8 +748,11 @@ def catalog() -> dict:
             node["title"] = spec.title
             node["when"] = spec.when
         nodes.append(node)
+    from ..config import get_settings
+
     return {"templates": templates, "labels": labels, "custom": custom, "sample": sample_values(), "languages": LANG_NAMES,
             "button_choices": [{"key": k, "label": registry.label(k, "en")} for k in BUTTON_CHOICES],
+            "so_menu_style": get_settings().so_menu_style,
             "placeholder_labels": PLACEHOLDER_LABELS,
             "flow": {"nodes": nodes, "edges": FLOW_EDGES},
             "loaded_at": registry.loaded_at.isoformat() if registry.loaded_at else None}

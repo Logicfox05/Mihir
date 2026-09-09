@@ -95,7 +95,7 @@ export interface CustomerTest {
 export type Lang = "en" | "hi" | "gu";
 export interface LangText { default: string; text: string; overridden: boolean }
 export interface CatalogTemplate {
-  key: string; title: string; when: string; allowed: string[]; required: string[]; max_len: number; trilingual: boolean; menu: string;
+  key: string; title: string; when: string; allowed: string[]; required: string[]; max_len: number; trilingual: boolean; neutral: boolean; menu: string;
   langs: Record<Lang, LangText>; buttons: string[]; buttons_editable: boolean; buttons_default: string[]; buttons_overridden: boolean; in_flow: boolean;
 }
 export interface FlowNode { key: string; kind: "customer" | "bot"; title: string; when?: string; text?: string; col: number; row: number }
@@ -108,6 +108,7 @@ export interface Catalog {
   templates: CatalogTemplate[]; labels: CatalogLabel[]; custom: CustomReply[]; sample: Record<string, string | number>;
   languages: Record<Lang, string>; button_choices: { key: string; label: string }[]; loaded_at: string | null;
   placeholder_labels: Record<string, string>;
+  so_menu_style: "auto" | "list";
   flow: { nodes: FlowNode[]; edges: FlowEdge[] };
 }
 
@@ -135,7 +136,7 @@ export interface Overview {
 }
 export interface SessionRow {
   phone: string; step: string; so_no: string | null; po_no: string | null; fg_code: string | null; pending_value: string | null;
-  pending_kind: string | null; attempts: number; language: string; updated_at: string | null; customer_name?: string | null;
+  pending_kind: string | null; attempts: number; language: string; lang_chosen?: boolean; updated_at: string | null; customer_name?: string | null;
 }
 export interface OptionItem { title: string; description: string }
 export interface MenuOptions { kind: "buttons" | "list"; items: OptionItem[]; button_text: string; section_title: string; header: string; footer: string }
@@ -167,5 +168,5 @@ export interface Outbound { phone: string; text: string; kind: string; at: strin
 export interface QueueRow { id: number; phone: string; status: string; attempts: number; error: string | null; created_at: string; updated_at: string }
 export interface SimResult {
   queued: { status: string; queue_id?: number; reason?: string }; queue_status?: string; queue_error?: string | null;
-  inbound: Msg | null; reply: Msg | null; session: SessionRow | null;
+  inbound: Msg | null; reply: Msg | null; replies?: Msg[]; session: SessionRow | null;
 }

@@ -46,14 +46,17 @@ ORDERS = [
 ]
 
 
-def write_customers() -> None:
+def write_customers(path: Path | None = None) -> Path:
+    path = path or FX / "customers_dummy.xlsx"
+    path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     ws = wb.active
     ws.title = "Customers"
     ws.append(CUSTOMER_HEADERS)
     for row in CUSTOMERS:
         ws.append(list(row))
-    wb.save(FX / "customers_dummy.xlsx")
+    wb.save(path)
+    return path
 
 
 def write_orders() -> None:

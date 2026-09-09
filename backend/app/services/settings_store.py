@@ -68,6 +68,9 @@ _F = [
     Field("customers_col_name", "customers", "str"),
     Field("customers_col_contact", "customers", "str"),
     Field("customer_sync_cron", "customers", "str"),
+    # ---- conversation ----
+    Field("session_timeout_min", "conversation", "int", min=1, max=1440),
+    Field("so_menu_style", "conversation", "choice", choices=("auto", "list")),
 ]
 FIELDS: dict[str, Field] = {f.key: f for f in _F}
 SECRET_KEYS = {f.key for f in _F if f.secret}

@@ -19,19 +19,36 @@ export function previewOptions(cat: Catalog, menu: string, buttons: string[], la
   const mk = (kind: "buttons" | "list", items: { title: string; description: string }[], extra: Partial<MenuOptions> = {}): MenuOptions => ({
     kind, items, button_text: "", section_title: "", header: "", footer: "", ...extra,
   });
-  if (menu === "so_list")
-    return mk("list", [
-      { title: "SO 45240", description: `${labelText(cat, "n_items", lang, { n: "3" })} · PO PO-8801` },
-      { title: "SO 45231", description: `${labelText(cat, "one_item", lang)} · PO PO-7781` },
-    ], { button_text: labelText(cat, "select_so", lang), section_title: labelText(cat, "your_orders", lang) });
-  if (menu === "fg_list")
-    return mk("list", ["FG-2001", "FG-2002", "FG-2003"].map((t) => ({ title: t, description: "" })), {
+  const asButtons = cat.so_menu_style !== "list";  // Settings -> Conversation: buttons when 3 or fewer, else a list
+  if (menu === "language")
+    return mk("buttons", ["lang_en", "lang_hi", "lang_gu"].map((k) => ({ title: labelText(cat, k, lang), description: "" })));
+  if (menu === "so_options")
+    return asButtons
+      ? mk("buttons", [{ title: "SO 45240", description: "" }, { title: "SO 45231", description: "" }])
+      : mk("list", [
+        { title: "SO 45240", description: `${labelText(cat, "n_items", lang, { n: "3" })} · PO PO-8801` },
+        { title: "SO 45231", description: `${labelText(cat, "one_item", lang)} · PO PO-7781` },
+      ], { button_text: labelText(cat, "select_so", lang), section_title: labelText(cat, "your_orders", lang) });
+  if (menu === "fg_options") {
+    const codes = ["FG-2001", "FG-2002", "FG-2003"].map((t) => ({ title: t, description: "" }));
+    return asButtons ? mk("buttons", codes) : mk("list", codes, {
       button_text: labelText(cat, "select_item", lang), section_title: labelText(cat, "items_of_so", lang, { so: "45240" }), footer: labelText(cat, "type_hint", lang),
     });
+  }
   if (menu === "confirm")
     return mk("buttons", [{ title: labelText(cat, "yes", lang), description: "" }, { title: labelText(cat, "no", lang), description: "" }]);
   if (buttons.length) return mk("buttons", buttons.map((b) => ({ title: labelText(cat, b, lang), description: "" })));
   return null;
+}
+
+/** Explains the menu under a message in plain words (for the flow map and the editor). */
+export function menuNote(menu: string, cat?: Catalog): string {
+  const list = cat?.so_menu_style === "list";
+  if (menu === "language") return "language buttons";
+  if (menu === "so_options") return list ? "order list" : "order buttons / list";
+  if (menu === "fg_options") return list ? "item list" : "item buttons / list";
+  if (menu === "confirm") return "Yes / No";
+  return "";
 }
 
 interface Props {
@@ -45,6 +62,7 @@ export default function MessageEditor({ kind, item, catalog, onSaved }: Props) {
   const tpl = kind === "template" ? (item as CatalogTemplate) : null;
   const lbl = kind === "label" ? (item as CatalogLabel) : null;
 
+  const neutral = !!tpl?.neutral;  // one text for everyone (sent before the language is known)
   const [lang, setLang] = useState<Lang>("en");
   const [baseline, setBaseline] = useState<Record<Lang, string>>({ en: item.langs.en.text, hi: item.langs.hi.text, gu: item.langs.gu.text });
   const [texts, setTexts] = useState<Record<Lang, string>>(baseline);
@@ -91,6 +109,7 @@ export default function MessageEditor({ kind, item, catalog, onSaved }: Props) {
     try {
       const next: Record<Lang, string> = { ...texts };
       if (kind === "label") LANGS.forEach((l) => { next[l] = next[l].trim(); });
+      if (neutral) { next.hi = next.en; next.gu = next.en; }  // one text for everyone
       const changed: Record<string, string> = {};
       LANGS.forEach((l) => { if (next[l] !== baseline[l]) changed[l] = next[l]; });
       let ok = true;
@@ -139,13 +158,16 @@ export default function MessageEditor({ kind, item, catalog, onSaved }: Props) {
         <div className="font-semibold">{item.title}</div>
         <div className="text-sm text-slate-500">{item.when}</div>
         {tpl?.trilingual && <div className="text-xs text-amber-700 mt-1">Always sent in all three languages together.</div>}
+        {neutral && <div className="text-xs text-amber-700 mt-1">Sent before the customer has chosen a language, so this one text goes to everyone. Mix languages freely.</div>}
+        {tpl?.menu === "so_options" && <div className="text-xs text-slate-500 mt-1">Shown with the customer's own SO numbers: as buttons when there are 3 or fewer, otherwise as a list. Change this under Settings → Conversation.</div>}
+        {tpl?.menu === "fg_options" && <div className="text-xs text-slate-500 mt-1">Shown with the items of the chosen SO: as buttons when there are 3 or fewer, otherwise as a list.</div>}
         {lbl?.intent && <div className="text-xs text-slate-500 mt-1">When a customer taps this button the bot reads it as <b>{lbl.intent}</b>. Rename it freely - the bot follows the new name.</div>}
       </div>
 
       <div className="flex gap-1">
-        {LANGS.map((l) => (
+        {(neutral ? (["en"] as Lang[]) : LANGS).map((l) => (
           <button key={l} onClick={() => setLang(l)} className={`btn ${lang === l ? "bg-brand-600 text-white border-brand-600" : "bg-white border-slate-300"}`}>
-            {catalog.languages[l]}
+            {neutral ? "All customers" : catalog.languages[l]}
             {item.langs[l].overridden && <span className="ml-1 text-[10px] opacity-80">&#9679;</span>}
             {errors[l]?.length ? <span className="ml-1 text-rose-500">!</span> : null}
           </button>
@@ -186,6 +208,9 @@ export default function MessageEditor({ kind, item, catalog, onSaved }: Props) {
       {tpl && !tpl.buttons_editable && tpl.menu === "confirm" && (
         <div className="text-xs text-slate-500">The Yes / No buttons are required here so the bot can understand the answer. You can rename them under "Menu buttons &amp; labels".</div>
       )}
+      {tpl && !tpl.buttons_editable && tpl.menu === "language" && (
+        <div className="text-xs text-slate-500">The three language buttons are fixed here. You can rename them under "Menu buttons &amp; labels".</div>
+      )}
 
       <div>
         <div className="text-sm font-medium mb-1">What the customer sees</div>
@@ -203,7 +228,7 @@ export default function MessageEditor({ kind, item, catalog, onSaved }: Props) {
           {shownErrors.map((e, i) => <li key={i}>{e}</li>)}
         </ul>
       )}
-      {otherLangErrors.length > 0 && (
+      {!neutral && otherLangErrors.length > 0 && (
         <div className="text-sm text-amber-700">Also fix: {otherLangErrors.map((l) => catalog.languages[l]).join(", ")}.</div>
       )}
 

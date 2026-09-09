@@ -50,12 +50,14 @@ class Options:
         return [o.title for o in self.items]
 
     def as_text(self) -> str:
-        """Plain-text fallback when the interactive send is not possible."""
-        if self.kind == "buttons":
-            return "\n".join(f"• {o.title}" for o in self.items)
+        """Plain-text fallback when the interactive send is not possible.
+
+        Deliberately NOT numbered: a customer who answers "1" would be typing something the bot has
+        to read as a whole message, and the reply we want back is the option's own text (an SO
+        number, an item code, a button name), which is what the parser understands."""
         lines = []
-        for i, o in enumerate(self.items, 1):
-            lines.append(f"{i}. {o.title}" + (f" — {o.description}" if o.description else ""))
+        for o in self.items:
+            lines.append(f"• {o.title}" + (f" — {o.description}" if o.description else ""))
         return "\n".join(lines)
 
 
@@ -65,6 +67,14 @@ def _cut(s: str, n: int) -> str:
 
 
 DEFAULT_LABELS: dict[str, dict[str, str]] = {
+    # language buttons: each shows its own native name whatever the current language
+    "lang_en": {"en": "English", "hi": "English", "gu": "English"},
+    "lang_hi": {"en": "हिंदी", "hi": "हिंदी", "gu": "હિન્દી"},
+    "lang_gu": {"en": "ગુજરાતી", "hi": "गुजराती", "gu": "ગુજરાતી"},
+    # main menu
+    "order_status": {"en": "Order status", "hi": "ऑर्डर स्टेटस", "gu": "ઓર્ડર સ્ટેટસ"},
+    "change_language": {"en": "Change language", "hi": "भाषा बदलें", "gu": "ભાષા બદલો"},
+    "contact_us": {"en": "Contact us", "hi": "संपर्क करें", "gu": "સંપર્ક કરો"},
     "yes": {"en": "Yes", "hi": "हाँ", "gu": "હા"},
     "no": {"en": "No", "hi": "नहीं", "gu": "ના"},
     "another": {"en": "Check another SO", "hi": "दूसरा SO देखें", "gu": "બીજો SO જુઓ"},
@@ -160,6 +170,36 @@ def fg_list(rows, lang: str) -> Options | None:
         section_title=_cut(label("items_of_so", lang, so=so), SECTION_TITLE_MAX),
         footer=_cut(label("type_hint", lang), FOOTER_MAX),
     )
+
+
+def language_buttons(lang: str) -> Options:
+    return Options(kind="buttons", items=[Option(_cut(label(k, lang), BUTTON_TEXT_MAX)) for k in ("lang_en", "lang_hi", "lang_gu")])
+
+
+def _distinct_sos(rows) -> list[str]:
+    return sorted({r.so_no for r in rows}, key=_so_sort_key)
+
+
+def so_options(rows, lang: str, style: str = "auto") -> Options | None:
+    """SO choices as tap-buttons when there are 3 or fewer (style=auto), otherwise as a list.
+    A single tap either way; buttons just look simpler for small accounts."""
+    sos = _distinct_sos(rows)
+    if not sos:
+        return None
+    if style == "auto" and len(sos) <= BUTTONS_MAX:
+        return Options(kind="buttons", items=[Option(_cut(f"SO {so}", BUTTON_TEXT_MAX)) for so in sos])
+    return so_list(rows, lang)
+
+
+def fg_options(rows, lang: str, style: str = "auto") -> Options | None:
+    """Item choices: buttons when 3 or fewer (style=auto), else a list; None when more than 10."""
+    codes: list[str] = []
+    for r in rows:
+        if r.fg_item_code and r.fg_item_code not in codes:
+            codes.append(r.fg_item_code)
+    if style == "auto" and 0 < len(codes) <= BUTTONS_MAX:
+        return Options(kind="buttons", items=[Option(_cut(c, BUTTON_TEXT_MAX)) for c in codes])
+    return fg_list(rows, lang)
 
 
 def confirm_buttons(lang: str) -> Options:

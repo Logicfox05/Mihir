@@ -10,3 +10,5 @@ dashboard/node_modules/
 dashboard/dist/
 *.log
 backend/.secret_key
+backend/tests/_generated/
+backend/fixtures/~$*

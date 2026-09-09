@@ -5,11 +5,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 
+from app.config import get_settings
 from app.db import session_scope
 from app.main import app
 from app.models import Template, TemplateHistory
 from app.services import menus, replies, templates as T
 from app.services.processor import process_payload
+from tests.flow import SHREE, open_menu
 
 H = {"X-Admin-Key": "test-admin"}
 
@@ -36,10 +38,13 @@ async def _send(phone, text):
 def test_validate_template_rules():
     assert T.validate_template("result", "en", "Status for SO {so_no}: {real_status}") == []
     assert any("missing required" in e for e in T.validate_template("result", "en", "Status: done"))
-    assert any("unknown placeholder" in e for e in T.validate_template("welcome", "en", "Hi {name}"))
-    assert any("unbalanced" in e for e in T.validate_template("welcome", "en", "Hi {support"))
-    assert any("empty" in e for e in T.validate_template("welcome", "hi", "   "))
-    assert any("too long" in e for e in T.validate_template("welcome", "en", "x" * 1025))
+    assert any("unknown placeholder" in e for e in T.validate_template("main_menu", "en", "Hi {name}"))
+    assert any("unbalanced" in e for e in T.validate_template("main_menu", "en", "Hi {support"))
+    assert any("empty" in e for e in T.validate_template("main_menu", "hi", "   "))
+    assert any("too long" in e for e in T.validate_template("main_menu", "en", "x" * 1025))
+    assert T.validate_template("main_menu", "en", "Hello {customer_name}, {support}") == []
+    assert T.validate_template("welcome_first", "en", "Hello, welcome!") == []
+    assert T.validate_template("result", "en", "Hello {customer_name}, SO {so_no} PO {po_no}: {real_status}") == []
     assert T.validate_template("nope", "en", "x") == ["unknown template 'nope'"]
 
 
@@ -66,54 +71,76 @@ def test_validate_custom_rules():
 
 # ---------------- overrides applied live ----------------
 @pytest.mark.asyncio
-async def test_template_override_changes_customer_reply(clean_templates):
-    assert await T.save_text("template", "result", "en", "Status of SO {so_no}{item} is: {real_status}. Thanks!") == []
-    r = await _send("919167861236", "45231")
-    assert r.reply_text.startswith("Status of SO 45231 is: In Production. Thanks!")
+async def test_template_override_changes_customer_reply(clean_templates, clean_sessions):
+    await open_menu(SHREE)
+    assert await T.save_text("template", "result", "en", "Status of SO {so_no}{item} is: {real_status}. Thanks {customer_name}!") == []
+    r = await _send(SHREE, "45231")
+    assert r.reply_text.startswith("Status of SO 45231 is: In Production. Thanks Shree Packaging Pvt Ltd!")
     # history recorded, reset restores default
     h = await T.history("template", "result")
     assert h and h[0]["action"] == "save" and h[0]["text"] is None
     await T.reset_key("template", "result")
-    r = await _send("919167861236", "45231")
-    assert r.reply_text.startswith("Real Status for SO 45231: In Production")
+    r = await _send(SHREE, "45231")
+    assert r.reply_text.startswith("Hello Shree Packaging Pvt Ltd,\n\nOrder: SO 45231\nReal Status: In Production")
+
+
+@pytest.mark.asyncio
+async def test_greeting_and_language_question_are_editable(clean_templates, clean_sessions):
+    assert await T.save_text("template", "welcome_first", "en", "Namaste! Welcome to GPP.") == []
+    assert await T.save_text("template", "ask_language", "en", "Language? / भाषा?") == []
+    r = await _send(SHREE, "hello")
+    assert r.replies == ["Namaste! Welcome to GPP.", "Language? / भाषा?"]
+    assert [i["title"] for i in r.options["items"]] == ["English", "हिंदी", "ગુજરાતી"]
+    assert await T.save_text("template", "main_menu", "hi", "नमस्ते {customer_name} जी, बताइए?") == []
+    r = await _send(SHREE, "हिंदी")
+    assert r.reply_text == "नमस्ते Shree Packaging Pvt Ltd जी, बताइए?"
 
 
 @pytest.mark.asyncio
 async def test_saving_default_text_drops_override(clean_templates):
-    default = replies.DEFAULTS["welcome"]["en"]
-    await T.save_text("template", "welcome", "en", "Custom hello")
-    assert T.registry.is_overridden("template", "welcome", "en")
-    await T.save_text("template", "welcome", "en", default)
-    assert not T.registry.is_overridden("template", "welcome", "en")
+    default = replies.DEFAULTS["main_menu"]["en"]
+    await T.save_text("template", "main_menu", "en", "Custom hello {customer_name}")
+    assert T.registry.is_overridden("template", "main_menu", "en")
+    await T.save_text("template", "main_menu", "en", default)
+    assert not T.registry.is_overridden("template", "main_menu", "en")
 
 
 @pytest.mark.asyncio
-async def test_label_override_changes_buttons_and_still_parses(clean_templates):
+async def test_label_override_changes_buttons_and_still_parses(clean_templates, clean_sessions, monkeypatch):
+    monkeypatch.setattr(get_settings(), "so_menu_style", "list")
+    await open_menu(SHREE)
     assert await T.save_text("label", "another", "en", "Another order") == []
     assert await T.save_text("label", "select_so", "en", "Pick order") == []
     assert menus.label("select_so", "en") == "Pick order"
-    r = await _send("919167861236", "45231")
+    r = await _send(SHREE, "45231")
     titles = [i["title"] for i in r.options["items"]]
-    assert titles == ["Another order", "Done"]
-    r = await _send("919167861236", "Another order")  # tapped (edited) label must still re-open the menu
-    assert r.outcome == "welcome" and r.options["button_text"] == "Pick order"
-    r = await _send("919167861236", "another order!")  # typed, different case/punctuation
-    assert r.outcome == "welcome"
+    assert titles == ["Another order", "Main menu", "Done"]
+    r = await _send(SHREE, "Another order")  # tapped (edited) label must still re-open the order list
+    assert r.outcome == "ask_so" and r.options["button_text"] == "Pick order"
+    r = await _send(SHREE, "another order!")  # typed, different case/punctuation
+    assert r.outcome == "ask_so"
     assert await T.save_text("label", "done", "gu", "પૂર્ણ") == []
-    r = await _send("919167861236", "પૂર્ણ")
+    r = await _send(SHREE, "પૂર્ણ")
     assert r.outcome == "bye"
 
 
 @pytest.mark.asyncio
-async def test_custom_reply_flow(clean_templates):
+async def test_custom_reply_flow(clean_templates, clean_sessions):
+    await open_menu(SHREE)
     c = T.CustomReply(key="office-hours", title="Office hours", triggers=["timing", "office hours", "समय"], texts={"en": "We are open Mon-Sat 9-6. Call {support}.", "hi": "हम सोम-शनि 9-6 खुले हैं।", "gu": ""}, buttons=["my_orders", "done"])
     assert await T.save_custom(c) == []
     r = await _send("919167861236", "What is your timing?")
     assert r.outcome == "custom" and "open Mon-Sat" in r.reply_text and "support@test" in r.reply_text
     assert [i["title"] for i in r.options["items"]] == ["Show my orders", "Done"]
     r = await _send("919167861236", "समय")
+    assert "open Mon-Sat" in r.reply_text  # English was chosen, so the reply stays English
+    await _send(SHREE, "change language")
+    await _send(SHREE, "हिंदी")
+    r = await _send("919167861236", "समय")
     assert "सोम-शनि" in r.reply_text
     # Gujarati text empty -> falls back to English
+    await _send(SHREE, "भाषा बदलें")
+    await _send(SHREE, "ગુજરાતી")
     r = await _send("919167861236", "ઓફિસ office hours")
     assert "open Mon-Sat" in r.reply_text
     # codes always win over custom triggers; session untouched by custom replies

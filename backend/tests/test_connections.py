@@ -15,7 +15,10 @@ from app.services import crypto
 from app.services import settings_store as store
 
 H = {"X-Admin-Key": "test-admin"}
+from tests.conftest import CUSTOMERS_XLSX as _CX
+
 FIXTURES = "fixtures"
+CUSTOMERS_XLSX = _CX.relative_to(_CX.parents[2]).as_posix()  # relative to backend/, like the other fixtures
 
 
 @pytest.fixture
@@ -103,7 +106,7 @@ async def test_public_view_never_leaks_a_password(clean_settings):
 # ---------------- customer Excel sources ----------------
 @pytest.mark.asyncio
 async def test_customer_excel_from_local_file(clean_settings):
-    s = get_settings().model_copy(update={"customers_source": "local", "customers_file_path": f"{FIXTURES}/customers_dummy.xlsx"})
+    s = get_settings().model_copy(update={"customers_source": "local", "customers_file_path": CUSTOMERS_XLSX})
     body, desc = await customer_sync.fetch_excel(s)
     assert body[:2] == b"PK" and desc.startswith("file ")
     r = await customer_sync.test_connection(s)
@@ -113,7 +116,7 @@ async def test_customer_excel_from_local_file(clean_settings):
 
 @pytest.mark.asyncio
 async def test_customer_excel_from_https_link(clean_settings):
-    xlsx = (get_settings().resolve_path(f"{FIXTURES}/customers_dummy.xlsx")).read_bytes()
+    xlsx = (get_settings().resolve_path(CUSTOMERS_XLSX)).read_bytes()
     s = get_settings().model_copy(update={
         "customers_source": "url", "customers_url": "https://sp.example.com/customers.xlsx",
         "customers_url_key": "k1", "customers_url_key_in": "header", "customers_url_key_name": "X-API-Key",
@@ -141,14 +144,14 @@ async def test_customer_excel_errors_are_explained(clean_settings):
     assert r["ok"] is False and "Dropbox" in r["error"]
 
     # wrong column name -> the headers that WERE found are reported so it can be fixed
-    s = get_settings().model_copy(update={"customers_source": "local", "customers_file_path": f"{FIXTURES}/customers_dummy.xlsx", "customers_col_name": "Party Name"})
+    s = get_settings().model_copy(update={"customers_source": "local", "customers_file_path": CUSTOMERS_XLSX, "customers_col_name": "Party Name"})
     r = await customer_sync.test_connection(s)
     assert r["ok"] is False and "Party Name" in r["error"] and "Customer Name" in r["headers"]
 
 
 @pytest.mark.asyncio
 async def test_saved_source_is_used_by_the_real_import(clean_settings):
-    xlsx = (get_settings().resolve_path(f"{FIXTURES}/customers_dummy.xlsx")).read_bytes()
+    xlsx = (get_settings().resolve_path(CUSTOMERS_XLSX)).read_bytes()
     assert await store.save({"customers_source": "url", "customers_url": "https://sp.example.com/c.xlsx"}) == {}
     with respx.mock(assert_all_called=True) as mock:
         mock.get("https://sp.example.com/c.xlsx").mock(return_value=Response(200, content=xlsx))
@@ -184,7 +187,7 @@ async def test_connections_api(clean_settings):
 @pytest.mark.asyncio
 async def test_test_endpoints_use_the_draft_and_save_nothing(clean_settings):
     csv = (get_settings().resolve_path(f"{FIXTURES}/orders_dummy.csv")).read_bytes()
-    xlsx = (get_settings().resolve_path(f"{FIXTURES}/customers_dummy.xlsx")).read_bytes()
+    xlsx = (get_settings().resolve_path(CUSTOMERS_XLSX)).read_bytes()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         with respx.mock(assert_all_called=True) as mock:
             mock.get("https://ppc.example.com/orders").mock(return_value=Response(200, content=csv, headers={"content-type": "text/csv"}))

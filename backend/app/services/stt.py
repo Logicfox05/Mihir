@@ -16,12 +16,22 @@ class SttError(Exception):
     pass
 
 
+class SttUnavailable(Exception):
+    """Voice notes are switched off or not configured. A settings problem, not a transient failure -
+    deliberately not an SttError, so the retry below never burns 3 x 60s on it."""
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=6), retry=retry_if_exception_type(SttError), reraise=True)
 async def transcribe(audio: bytes, filename: str = "voice.ogg", language: str | None = None) -> str:
     s = get_settings()
+    if not s.voice_notes:
+        raise SttUnavailable("voice notes are switched off (VOICE_NOTES=false)")
     if not s.groq_api_key:
-        log.info("stt_fixture_used")
-        return FIXTURE_TRANSCRIPT
+        # Guessing a transcript would look up a real order for the wrong customer, so only ever in dev.
+        if s.is_dev:
+            log.info("stt_fixture_used")
+            return FIXTURE_TRANSCRIPT
+        raise SttUnavailable("GROQ_API_KEY is not set, so speech cannot be turned into text")
     data = {"model": s.groq_stt_model, "response_format": "json"}
     if language:
         data["language"] = language

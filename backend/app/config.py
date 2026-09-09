@@ -5,6 +5,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -34,6 +35,8 @@ class Settings(BaseSettings):
     support_contact: str = "[phone/email]"
     # Encrypts connection passwords stored in the database. Auto-created in backend/.secret_key if unset.
     secret_key: str = ""
+    # Emergency escape hatch: start in prod even with an unsafe config. Never use it on a real server.
+    allow_insecure_prod: bool = False
 
     # WATI
     wati_base_url: str = "https://live-mt-server.wati.io/tenant"
@@ -43,6 +46,9 @@ class Settings(BaseSettings):
     wati_api_version: Literal["v1", "v3"] = "v1"  # interactive (list/buttons) endpoints: v1 = documented default, v3 = /api/ext/v3
 
     # AI
+    # Voice notes are OFF by default: speech-to-text can misread digits, so a wrong SO number would be
+    # looked up silently. When off, a voice note gets the editable "voice_off" reply asking to type.
+    voice_notes: bool = False
     groq_api_key: str = ""
     groq_stt_model: str = "whisper-large-v3-turbo"
     openai_api_key: str = ""
@@ -84,10 +90,15 @@ class Settings(BaseSettings):
     orders_stale_minutes: int = 30
 
     # Session / limits
-    session_timeout_min: int = 15
+    # A new "window" starts after this much silence: the customer gets the greeting + language question again.
+    session_timeout_min: int = 30
+    # How SO / item choices are shown: auto = buttons when 3 or fewer, list otherwise; list = always a list
+    so_menu_style: Literal["auto", "list"] = "auto"
     fg_max_attempts: int = 2
     rate_limit_msgs: int = 20
     rate_limit_window_min: int = 10
+    # One customer message may never block the queue for longer than this.
+    queue_item_timeout_sec: int = 90
 
     # Alerts
     alert_slack_webhook: str = ""
@@ -115,10 +126,32 @@ class Settings(BaseSettings):
         return self.app_mode == "dev"
 
     @property
+    def wati_base_url_ok(self) -> bool:
+        """True only when the URL carries a real tenant id, not the .env.example placeholder.
+        WATI's base URL looks like https://live-mt-server.wati.io/123456 - the last path segment is
+        the tenant id. Sending to `.../<tenantId>` or `.../tenant` 404s on every call."""
+        u = (self.wati_base_url or "").strip().rstrip("/")
+        if not u.lower().startswith(("http://", "https://")) or "<" in u or ">" in u:
+            return False
+        tail = urlsplit(u).path.strip("/").split("/")[-1].lower()
+        return bool(tail) and tail not in {"tenant", "tenantid", "tenant_id", "your-tenant-id"}
+
+    @property
+    def wati_config_problem(self) -> str:
+        """'' when WATI is fully configured, else the one thing to fix (shown in the dashboard)."""
+        if not self.wati_token:
+            return "No WATI token set - messages are simulated, nothing is sent to WhatsApp."
+        if not self.wati_base_url_ok:
+            return (f"WATI_BASE_URL is still a placeholder ({self.wati_base_url!r}). Put your own tenant id at the end, "
+                    "e.g. https://live-mt-server.wati.io/123456 - copy it from WATI -> Settings -> API Docs.")
+        return ""
+
+    @property
     def wati_mocked(self) -> bool:
         if self.wati_dry_run is not None:
             return self.wati_dry_run
-        return not self.wati_token
+        # A token with a placeholder base URL would 404 on every send; mock instead of failing silently.
+        return not (self.wati_token and self.wati_base_url_ok)
 
     @property
     def dropbox_configured(self) -> bool:

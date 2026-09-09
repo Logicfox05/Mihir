@@ -67,17 +67,30 @@ The customer import intentionally rejects row 10 (5-digit number) and row 11 (du
 
 ## 2. What the customer sees (menus)
 
+```
+first message of a window ─▶ greeting (one text for everyone)
+                             "Please choose your language"  [English] [हिंदी] [ગુજરાતી]
+                       ─▶ "Hello {customer_name}, how can we help you today?"
+                             [Order status] [Change language] [Contact us]
+Order status ─▶ this customer's SO numbers as buttons (≤3) or a list ─▶ items of the SO (buttons / list)
+             ─▶ "Hello {customer_name}, Order: SO … Real Status: …"  [Check another SO] [Main menu] [Done]
+```
+
 | Step | Type | Options |
 |---|---|---|
-| "hi" / "menu" / any greeting | **List** (button "Select SO") | one row per SO of *this customer only*, newest first, max 10: `SO 45240 — 3 items · PO PO-8801`. Footer "Not listed? Type your SO number." when more than 10 |
-| SO with several items | **List** (button "Select item") | one row per FG item code (max 10, else plain text) |
-| status delivered | **Buttons** | `Check another SO` · `Done` |
-| SO / item not found | **Buttons** | `Show my orders` · `Done` |
+| first message after `SESSION_TIMEOUT_MIN` (30 min) of silence, or after `Done` | text + **Buttons** | greeting, then the language question with `English` · `हिंदी` · `ગુજરાતી` (typed "english" / "hindi" / "1" also work) |
+| language chosen, "menu", "hi" | **Buttons** | `Order status` · `Change language` · `Contact us` |
+| Order status | **Buttons** (≤3 SOs) or **List** (button "Select SO") | one per SO of *this customer only*, newest first, max 10. Settings → Conversation can force "always a list" |
+| SO with several items | **Buttons** (≤3) or **List** (button "Select item") | one per FG item code (max 10, else plain text) |
+| status delivered | **Buttons** | `Check another SO` · `Main menu` · `Done` |
+| SO / item not found | **Buttons** | `Show my orders` · `Main menu` |
+| no orders under this name | **Buttons** | `Main menu` · `Contact us` |
 | after a voice note | **Buttons** | `Yes` · `No` (confirms the transcribed number; speech-to-text misreads digits) |
 | number not in Excel / name mismatch | plain text | apology in EN + HI + GU with your support contact |
 
-Replies are in the language the customer wrote in (English / Hindi / Gujarati); a tapped option keeps the current language.
+The chosen language sticks for the whole window whatever script the customer types in; `Change language` shows the buttons again.
 A tapped row or button arrives from WATI as text (its title), so typed and tapped answers go through the **same** parser and the same security checks. If WATI ever rejects an interactive message, the same text is sent with the options as numbered lines.
+Every text and every button label above is editable in dashboard → Messages; the button sets under the main menu, result, not-found and contact messages can be changed too.
 
 ---
 

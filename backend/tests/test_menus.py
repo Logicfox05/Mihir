@@ -4,11 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.config import get_settings
 from app.db import session_scope
 from app.services import menus
 from app.services.intent import regex_parse
 from app.services.processor import extract_message, process_payload, selection_title
 from app.services.wati import WatiClient, wati
+from tests.flow import ANAND, MEHTA, PATEL, SHREE, open_menu
 
 
 def _rows(so_items: dict[str, list[str]], name="X"):
@@ -48,16 +50,24 @@ def test_fg_list_and_fallback_when_too_many():
 
 def test_buttons_valid_and_labels_parse_as_intents():
     for lang in ("en", "hi", "gu"):
-        for o in (menus.confirm_buttons(lang), menus.after_result_buttons(lang), menus.not_found_buttons(lang)):
-            assert o.kind == "buttons" and menus.validate(o) == [], (lang, o)
+        for key in ("ask_language", "main_menu", "contact_us", "so_none", "result", "not_found", "confirm_so"):
+            o = menus.buttons_for(key, lang)
+            assert o and o.kind == "buttons" and menus.validate(o) == [], (lang, key, o)
         yes, no = menus.confirm_buttons(lang).titles()
         assert regex_parse(yes).intent == "confirm_yes", (lang, yes)
         assert regex_parse(no).intent == "confirm_no", (lang, no)
-        another, done = menus.after_result_buttons(lang).titles()
-        assert regex_parse(another).intent == "menu", (lang, another)
+        en, hi, gu = menus.language_buttons(lang).titles()
+        assert (regex_parse(en).intent, regex_parse(hi).intent, regex_parse(gu).intent) == ("lang_en", "lang_hi", "lang_gu"), lang
+        order, change, contact = menus.buttons_for("main_menu", lang).titles()
+        assert regex_parse(order).intent == "order_status", (lang, order)
+        assert regex_parse(change).intent == "change_language", (lang, change)
+        assert regex_parse(contact).intent == "contact_us", (lang, contact)
+        another, menu, done = menus.buttons_for("result", lang).titles()
+        assert regex_parse(another).intent == "order_status", (lang, another)
+        assert regex_parse(menu).intent == "menu", (lang, menu)
         assert regex_parse(done).intent == "bye", (lang, done)
-        my_orders, _ = menus.not_found_buttons(lang).titles()
-        assert regex_parse(my_orders).intent == "menu", (lang, my_orders)
+        my_orders, _ = menus.buttons_for("not_found", lang).titles()
+        assert regex_parse(my_orders).intent == "order_status", (lang, my_orders)
 
 
 def test_row_titles_parse_back_to_codes():
@@ -125,60 +135,65 @@ async def _send(payload: dict):
 
 
 @pytest.mark.asyncio
-async def test_menu_driven_conversation(clean_sessions):
-    mehta = "919876543210"
-    r = await _send({"waId": mehta, "type": "text", "text": "hi"})
+async def test_list_rows_from_wati_drive_the_conversation(clean_sessions, monkeypatch):
+    """WATI reports a tapped list row as listReply; the row title goes through the normal parser."""
+    monkeypatch.setattr(get_settings(), "so_menu_style", "list")
+    await open_menu(MEHTA)
+    r = await _send({"waId": MEHTA, "type": "button", "buttonReply": {"text": "Order status"}})
     assert r.options and r.options["kind"] == "list" and r.options["items"][0]["title"] == "SO 45240"
-    assert r.outcome == "welcome" and r.step_after == "AWAIT_SO"
-    # tap the SO row
-    r = await _send({"waId": mehta, "type": "interactive", "text": "SO 45240", "listReply": {"title": "SO 45240", "description": "3 items"}})
+    assert r.outcome == "ask_so" and r.step_after == "AWAIT_SO"
+    r = await _send({"waId": MEHTA, "type": "interactive", "text": "SO 45240", "listReply": {"title": "SO 45240", "description": "3 items"}})
     assert r.outcome == "ask_fg" and r.options["kind"] == "list" and [i["title"] for i in r.options["items"]] == ["FG-2001", "FG-2002", "FG-2003"]
-    # tap the FG row
-    r = await _send({"waId": mehta, "type": "interactive", "listReply": {"title": "FG-2003", "description": ""}})
+    r = await _send({"waId": MEHTA, "type": "interactive", "listReply": {"title": "FG-2003", "description": ""}})
     assert r.outcome == "status_delivered" and "Awaiting Material" in r.reply_text
-    assert r.options["kind"] == "buttons" and [i["title"] for i in r.options["items"]] == ["Check another SO", "Done"]
-    # tap "Check another SO"
-    r = await _send({"waId": mehta, "type": "button", "buttonReply": {"text": "Check another SO"}})
-    assert r.outcome == "welcome" and r.options["kind"] == "list"
-    # tap Done
-    r = await _send({"waId": mehta, "type": "button", "buttonReply": {"text": "Done"}})
+    assert r.options["kind"] == "buttons" and [i["title"] for i in r.options["items"]] == ["Check another SO", "Main menu", "Done"]
+    r = await _send({"waId": MEHTA, "type": "button", "buttonReply": {"text": "Check another SO"}})
+    assert r.outcome == "ask_so" and r.options["kind"] == "list"
+    r = await _send({"waId": MEHTA, "type": "button", "buttonReply": {"text": "Done"}})
     assert r.outcome == "bye" and r.step_after == "START" and r.options is None
 
 
 @pytest.mark.asyncio
 async def test_menu_shows_only_own_orders_and_no_orders_case(clean_sessions):
-    r = await _send({"waId": "919167861236", "type": "text", "text": "menu"})  # Shree
+    await open_menu(SHREE)
+    r = await _send({"waId": SHREE, "type": "text", "text": "order status"})
     assert [i["title"] for i in r.options["items"]] == ["SO 45232", "SO 45231"]
-    r = await _send({"waId": "919925001122", "type": "text", "text": "hi"})  # Patel: only a mismatching row exists
-    assert r.options is None and "could not find any orders" in r.reply_text
-    r = await _send({"waId": "919081726354", "type": "text", "text": "hi"})  # Anand: no rows
-    assert r.options is None and r.outcome == "welcome"
+    await open_menu(PATEL)  # only a mismatching row exists
+    r = await _send({"waId": PATEL, "type": "text", "text": "orders"})
+    assert "could not find any orders" in r.reply_text and r.options["kind"] == "buttons"
+    await open_menu(ANAND)  # no rows
+    r = await _send({"waId": ANAND, "type": "button", "buttonReply": {"text": "Order status"}})
+    assert r.outcome == "ask_so" and "could not find any orders" in r.reply_text
 
 
 @pytest.mark.asyncio
 async def test_voice_confirm_has_yes_no_buttons_and_not_found_buttons(clean_sessions):
-    r = await _send({"waId": "919167861236", "type": "audio", "data": "x.ogg"})
+    await open_menu(SHREE)
+    r = await _send({"waId": SHREE, "type": "audio", "data": "x.ogg"})
     assert r.outcome == "confirm" and [i["title"] for i in r.options["items"]] == ["Yes", "No"]
-    r = await _send({"waId": "919167861236", "type": "button", "buttonReply": {"text": "Yes"}})
+    r = await _send({"waId": SHREE, "type": "button", "buttonReply": {"text": "Yes"}})
     assert r.outcome == "status_delivered"
-    r = await _send({"waId": "919167861236", "type": "text", "text": "99999"})
-    assert r.outcome == "not_found" and [i["title"] for i in r.options["items"]] == ["Show my orders", "Done"]
-    r = await _send({"waId": "919167861236", "type": "button", "buttonReply": {"text": "Show my orders"}})
-    assert r.outcome == "welcome" and r.options["kind"] == "list"
+    r = await _send({"waId": SHREE, "type": "text", "text": "99999"})
+    assert r.outcome == "not_found" and [i["title"] for i in r.options["items"]] == ["Show my orders", "Main menu"]
+    r = await _send({"waId": SHREE, "type": "button", "buttonReply": {"text": "Show my orders"}})
+    assert r.outcome == "ask_so" and r.options["kind"] == "buttons"
 
 
 @pytest.mark.asyncio
 async def test_outbox_records_menu(clean_sessions):
     n0 = len(wati.outbox)
-    await _send({"waId": "919876543210", "type": "text", "text": "hi"})
-    assert len(wati.outbox) == n0 + 1 and wati.outbox[-1]["kind"] == "list" and wati.outbox[-1]["options"]["items"]
+    await _send({"waId": MEHTA, "type": "text", "text": "hi"})
+    assert len(wati.outbox) == n0 + 2 and wati.outbox[-1]["kind"] == "buttons" and wati.outbox[-1]["options"]["items"]
+    assert wati.outbox[-2]["kind"] == "text"
 
 
 @pytest.mark.asyncio
-async def test_hindi_menu_labels(clean_sessions):
-    r = await _send({"waId": "919876543210", "type": "text", "text": "नमस्ते"})
+async def test_hindi_menu_labels(clean_sessions, monkeypatch):
+    monkeypatch.setattr(get_settings(), "so_menu_style", "list")
+    await open_menu(MEHTA, "हिंदी")
+    r = await _send({"waId": MEHTA, "type": "button", "buttonReply": {"text": "ऑर्डर स्टेटस"}})
     assert r.options["button_text"] == "SO चुनें" and "आइटम" in r.options["items"][0]["description"]
-    r = await _send({"waId": "919876543210", "type": "interactive", "listReply": {"title": "SO 45240"}})
+    r = await _send({"waId": MEHTA, "type": "interactive", "listReply": {"title": "SO 45240"}})
     assert "SO 45240" in r.options["section_title"] and r.options["button_text"] == "आइटम चुनें"
 
 

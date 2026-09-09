@@ -10,6 +10,14 @@ from .config import get_settings
 
 def setup_logging() -> None:
     s = get_settings()
+    # Replies contain Hindi, Gujarati and emoji. A Windows console or a redirected log file often
+    # defaults to cp1252, where writing that text raises - and because the log line is written while
+    # a message is being processed, the customer would get "service unavailable" instead of a reply.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     level = getattr(logging, s.log_level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level)
     for noisy in ("httpx", "httpcore", "apscheduler", "aiosqlite"):

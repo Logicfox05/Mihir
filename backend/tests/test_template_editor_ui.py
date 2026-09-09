@@ -13,9 +13,9 @@ from app.models import Template, TemplateHistory
 from app.services import menus, templates as T
 from app.services.processor import process_payload
 from app.services.wati import wati
+from tests.flow import SHREE, open_menu
 
 H = {"X-Admin-Key": "test-admin"}
-SHREE = "919167861236"
 
 
 @pytest.fixture
@@ -65,20 +65,22 @@ def test_button_validation():
     assert any("same button" in e for e in T.validate_buttons("result", ["done", "done"]))
     assert any("unknown button" in e for e in T.validate_buttons("result", ["nope"]))
     assert any("cannot be changed" in e for e in T.validate_buttons("confirm_so", ["yes"]))
+    assert any("cannot be changed" in e for e in T.validate_buttons("ask_language", ["lang_en"]))
     assert T.validate_buttons("verify_failed", ["done"]) == ["'verify_failed' cannot have buttons"]
 
 
 @pytest.mark.asyncio
-async def test_changing_buttons_changes_what_the_customer_gets(clean_templates):
+async def test_changing_buttons_changes_what_the_customer_gets(clean_templates, clean_sessions):
+    await open_menu(SHREE)
     r = await _send(SHREE, "45231")
-    assert [i["title"] for i in r.options["items"]] == ["Check another SO", "Done"]
+    assert [i["title"] for i in r.options["items"]] == ["Check another SO", "Main menu", "Done"]
 
     assert await T.save_buttons("result", ["my_orders"]) == []
     r = await _send(SHREE, "45231")
     assert [i["title"] for i in r.options["items"]] == ["Show my orders"]
     # the new button still works when tapped
     r = await _send(SHREE, "Show my orders")
-    assert r.outcome == "welcome"
+    assert r.outcome == "ask_so"
 
     # no buttons at all -> plain message
     assert await T.save_buttons("result", []) == []
@@ -86,18 +88,38 @@ async def test_changing_buttons_changes_what_the_customer_gets(clean_templates):
     assert r.options is None
 
     # back to the default drops the override row
-    assert await T.save_buttons("result", ["another", "done"]) == []
+    assert await T.save_buttons("result", ["another", "menu", "done"]) == []
     assert not T.registry.buttons_overridden("result")
+
+    # the main menu buttons are editable too
+    assert await T.save_buttons("main_menu", ["order_status", "contact_us"]) == []
+    r = await _send(SHREE, "menu")
+    assert [i["title"] for i in r.options["items"]] == ["Order status", "Contact us"]
 
 
 @pytest.mark.asyncio
-async def test_buttons_follow_renamed_labels(clean_templates):
+async def test_buttons_follow_renamed_labels(clean_templates, clean_sessions):
+    await open_menu(SHREE)
     await T.save_buttons("bye", ["my_orders"])
     await T.save_text("label", "my_orders", "en", "See orders")
     r = await _send(SHREE, "done")
     assert r.outcome == "bye" and [i["title"] for i in r.options["items"]] == ["See orders"]
+    # the window ended, so the next message greets again; after the language the renamed button still works
+    await open_menu(SHREE)
     r = await _send(SHREE, "See orders")
-    assert r.outcome == "welcome"
+    assert r.outcome == "ask_so"
+
+
+@pytest.mark.asyncio
+async def test_renamed_language_and_menu_buttons_still_work(clean_templates, clean_sessions):
+    await T.save_text("label", "lang_en", "en", "English please")
+    await T.save_text("label", "order_status", "en", "My orders")
+    r = await _send(SHREE, "hi")
+    assert [i["title"] for i in r.options["items"]] == ["English please", "हिंदी", "ગુજરાતી"]
+    r = await _send(SHREE, "English please")
+    assert r.outcome == "menu" and [i["title"] for i in r.options["items"]][0] == "My orders"
+    r = await _send(SHREE, "My orders")
+    assert r.outcome == "ask_so"
 
 
 def test_confirm_buttons_stay_fixed():
@@ -115,7 +137,7 @@ async def test_buttons_api(clean_templates):
         assert r.json()["ok"] is False
         assert T.registry.buttons("result") == ["done"]  # rejected save changed nothing
         r = await c.delete("/admin/api/templates/buttons/result", headers=H)
-        assert r.json()["buttons"] == ["another", "done"]
+        assert r.json()["buttons"] == ["another", "menu", "done"]
         assert (await c.delete("/admin/api/templates/buttons/verify_failed", headers=H)).status_code == 404
         # the generic text route is not shadowed by /buttons/{key}
         r = await c.put("/admin/api/templates/template/bye", headers=H, json={"texts": {"en": "Bye now!"}})
@@ -161,8 +183,8 @@ async def test_test_send(clean_templates):
         r = (await c.post("/admin/api/templates/test-send", headers=H,
                           json={"kind": "template", "key": "result", "lang": "en", "phone": "9167861236"})).json()
         assert r["ok"] is True and r["mocked"] is True and r["sent_to"] == "919167861236"
-        assert "45240" in r["text"] and "In Production" in r["text"]
-        assert [i["title"] for i in r["options"]["items"]] == ["Check another SO", "Done"]
+        assert r["text"].startswith("Hello Mehta Foods,") and "45240" in r["text"] and "In Production" in r["text"]
+        assert [i["title"] for i in r["options"]["items"]] == ["Check another SO", "Main menu", "Done"]
         assert len(wati.outbox) == n0 + 1
 
         # unsaved draft text is what gets sent
@@ -188,13 +210,21 @@ async def test_test_send(clean_templates):
 
 
 @pytest.mark.asyncio
-async def test_test_send_uses_the_list_menu_and_edited_labels(clean_templates):
+async def test_test_send_uses_the_order_menu_and_edited_labels(clean_templates, monkeypatch):
     await T.save_text("label", "select_so", "en", "Pick order")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = (await c.post("/admin/api/templates/test-send", headers=H,
-                          json={"kind": "template", "key": "welcome_list", "lang": "en", "phone": "9167861236"})).json()
-    assert r["options"]["kind"] == "list" and r["options"]["button_text"] == "Pick order"
-    assert [i["title"] for i in r["options"]["items"]] == ["SO 45240", "SO 45231"]
+                          json={"kind": "template", "key": "ask_so_list", "lang": "en", "phone": "9167861236"})).json()
+        assert r["options"]["kind"] == "buttons" and [i["title"] for i in r["options"]["items"]] == ["SO 45240", "SO 45231"]
+        monkeypatch.setattr(get_settings(), "so_menu_style", "list")
+        r = (await c.post("/admin/api/templates/test-send", headers=H,
+                          json={"kind": "template", "key": "ask_so_list", "lang": "en", "phone": "9167861236"})).json()
+        assert r["options"]["kind"] == "list" and r["options"]["button_text"] == "Pick order"
+        assert [i["title"] for i in r["options"]["items"]] == ["SO 45240", "SO 45231"]
+        # the language question carries the three language buttons
+        r = (await c.post("/admin/api/templates/test-send", headers=H,
+                          json={"kind": "template", "key": "ask_language", "lang": "hi", "phone": "9167861236"})).json()
+        assert [i["title"] for i in r["options"]["items"]] == ["English", "हिंदी", "गुजराती"]
 
 
 @pytest.mark.asyncio

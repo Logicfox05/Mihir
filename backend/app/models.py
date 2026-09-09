@@ -48,6 +48,7 @@ class Session(Base):
     pending_kind: Mapped[str | None] = mapped_column(String(10))  # so | po | fg
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     language: Mapped[str] = mapped_column(String(5), default="en")
+    lang_chosen: Mapped[bool] = mapped_column(Boolean, default=False)  # picked from the language buttons this window
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 

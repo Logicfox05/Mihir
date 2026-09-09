@@ -59,9 +59,9 @@ export function Badge({ children, tone = "slate" }: { children: ReactNode; tone?
   return <span className={`badge ${map[tone] || map.slate}`}>{children}</span>;
 }
 
-export const STEP_TONE: Record<string, string> = { START: "slate", AWAIT_SO: "blue", CONFIRM: "amber", AWAIT_FG: "violet", DONE: "green", FAILED: "red" };
+export const STEP_TONE: Record<string, string> = { START: "slate", LANG: "slate", MENU: "blue", AWAIT_SO: "blue", CONFIRM: "amber", AWAIT_FG: "violet", DONE: "green", FAILED: "red" };
 export const OUTCOME_TONE: Record<string, string> = {
-  status_delivered: "green", welcome: "blue", ask_so: "blue", ask_fg: "violet", confirm: "amber", not_found: "amber",
+  status_delivered: "green", welcome: "slate", ask_language: "slate", menu: "blue", contact: "blue", ask_so: "blue", ask_fg: "violet", confirm: "amber", not_found: "amber",
   verify_failed: "red", mismatch: "red", service_down: "red", rate_limited: "red", bye: "slate", custom: "blue",
 };
 

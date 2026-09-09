@@ -19,7 +19,7 @@ async def run() -> int:
         res = await db.execute(
             update(Session)
             .where(Session.updated_at < cutoff, Session.step != "START")
-            .values(step="START", so_no=None, po_no=None, fg_code=None, pending_value=None, pending_kind=None, attempts=0)
+            .values(step="START", so_no=None, po_no=None, fg_code=None, pending_value=None, pending_kind=None, attempts=0, lang_chosen=False)
         )
         n = res.rowcount or 0
     if n:

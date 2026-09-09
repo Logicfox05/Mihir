@@ -8,6 +8,7 @@ from app.db import session_scope
 from app.jobs import queue_worker
 from app.main import app
 from app.models import InboundQueue, MessageLog
+from tests.flow import open_menu
 
 HOOK = "/webhook/wati?token=test-hook"
 
@@ -23,6 +24,7 @@ async def test_token_required():
 
 @pytest.mark.asyncio
 async def test_enqueue_and_dedup(clean_sessions):
+    await open_menu("919167861236")
     mid = f"wamid-{uuid.uuid4().hex}"
     payload = {"id": mid, "waId": "919167861236", "type": "text", "text": "45231", "eventType": "message", "owner": False}
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:

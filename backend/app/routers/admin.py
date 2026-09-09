@@ -15,7 +15,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..jobs import customer_sync, order_refresh, queue_worker, scheduler, session_cleanup
 from ..models import Customer, InboundQueue, MessageLog, NameMismatchLog, OrderCache, Session, SyncRun, utcnow
-from ..services import alerts
+from ..services import alerts, intent
 from ..services.state_machine import reset
 from ..services.wati import wati
 from .health import status_payload
@@ -42,7 +42,7 @@ def _session_dict(s: Session) -> dict:
     return {
         "phone": s.phone_e164, "step": s.step, "so_no": s.so_no, "po_no": s.po_no, "fg_code": s.fg_code,
         "pending_value": s.pending_value, "pending_kind": s.pending_kind, "attempts": s.attempts,
-        "language": s.language, "updated_at": _dt(s.updated_at),
+        "language": s.language, "lang_chosen": bool(s.lang_chosen), "updated_at": _dt(s.updated_at),
     }
 
 
@@ -101,7 +101,8 @@ async def overview(db: AsyncSession = Depends(get_db)):
         "alerts": list(alerts.recent)[-20:],
         "config": {"mode": s.app_mode, "wati_mocked": s.wati_mocked, "orders_source": s.orders_source, "orders_format": s.orders_format,
                    "order_refresh_minutes": s.order_refresh_minutes, "customer_sync_cron": s.customer_sync_cron, "session_timeout_min": s.session_timeout_min,
-                   "openai": bool(s.openai_api_key), "groq": bool(s.groq_api_key), "dropbox": s.dropbox_configured, "support_contact": s.support_contact},
+                   "openai": bool(s.openai_api_key), "openai_paused": intent.breaker_open(),
+                   "groq": bool(s.groq_api_key), "dropbox": s.dropbox_configured, "support_contact": s.support_contact},
     }
 
 
@@ -279,7 +280,12 @@ async def simulate(body: SimulateIn, db: AsyncSession = Depends(get_db)):
     if res.get("status") != "queued":
         return {"queued": res, "reply": None}
     item = await queue_worker.wait_for(res["queue_id"], timeout=20)
-    replies = (await db.execute(select(MessageLog).where(MessageLog.phone_e164 == body.phone.strip(), MessageLog.direction == "out").order_by(desc(MessageLog.id)).limit(1))).scalars().all()
+    # every bot message written after this inbound one (the greeting is two messages)
+    replies = (await db.execute(
+        select(MessageLog)
+        .where(MessageLog.phone_e164 == body.phone.strip(), MessageLog.direction == "out", MessageLog.id > res["message_log_id"])
+        .order_by(MessageLog.id)
+    )).scalars().all()
     inbound = await db.get(MessageLog, res["message_log_id"])
     sess = await db.get(Session, body.phone.strip())
     return {
@@ -287,7 +293,8 @@ async def simulate(body: SimulateIn, db: AsyncSession = Depends(get_db)):
         "queue_status": item.status if item else "timeout",
         "queue_error": item.error if item else None,
         "inbound": _msg_dict(inbound) if inbound else None,
-        "reply": _msg_dict(replies[0]) if replies else None,
+        "reply": _msg_dict(replies[-1]) if replies else None,
+        "replies": [_msg_dict(m) for m in replies],
         "session": _session_dict(sess) if sess else None,
     }
 
